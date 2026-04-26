@@ -28,6 +28,8 @@ go.work.sum
 
 # gen
 messages/pb/
+proto-repo-temp/
+contracts/
 
 mvzserver.exe
 mvzserver
