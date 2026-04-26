@@ -26,6 +26,9 @@ go.work.sum
 # env file
 .env
 
+# local certificates
+certs/
+
 # gen
 messages/pb/
 proto-repo-temp/
