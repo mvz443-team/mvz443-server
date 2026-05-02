@@ -4,17 +4,16 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log"
-	"mvzserver/config"
 	"mvzserver/handlers"
 	roommanager "mvzserver/room-manager"
+	"mvzserver/utils"
 	"net"
-	"net/http"
+	"os"
 	"path/filepath"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/websocket/v2"
-	"golang.org/x/crypto/acme/autocert"
 )
 
 type App struct {
@@ -25,9 +24,10 @@ type App struct {
 }
 
 type AppConfig struct {
-	UseCert     bool   // 启用通过 Let's Encrypt 自动管理证书
-	UseSelfCert string // 启用自签名证书的路径,例如 `/etc/letsencrypt/live/scarletborder.cn`
-	UsePort     int    // 指定监听端口
+	Host          string // 指定监听地址
+	Port          string // 指定监听端口
+	PemCertsDir   string // 包含 cert.pem 和 privkey.pem 的证书目录
+	LocalCertsDir string // 包含 ssl.cert 和 ssl.key 的证书目录
 }
 
 func NewApp(cfg AppConfig) *App {
@@ -63,90 +63,45 @@ func CreateFiberApp(cfg AppConfig, serverHandler *handlers.ServerHandler) (fapp 
 	fapp.Get("/ws", websocket.New(serverHandler.HandleWS))
 	fapp.Get("/list", serverHandler.HandleListRoom)
 
-	if cfg.UseCert {
-		// 使用 Let's Encrypt 自动管理证书模式
-		// 从环境变量获取允许的域名和证书缓存目录
-		allowedHosts := config.GetAllowedHosts()
-		certsDir := config.GetEnvOrDefault(config.EnvCerts, "certs")
+	listenAddr := net.JoinHostPort(cfg.Host, cfg.Port)
+	certPath, keyPath := resolveCertPair(cfg)
 
-		// 配置 autocert.Manager 自动管理 Let's Encrypt 证书
-		m := autocert.Manager{
-			Prompt:     autocert.AcceptTOS,
-			HostPolicy: autocert.HostWhitelist(allowedHosts...), // 使用环境变量中的域名
-			Cache:      autocert.DirCache(certsDir),             // 使用环境变量中的证书缓存目录
-		}
+	log.Printf("启用 HTTPS 服务，监听 %s，使用证书: %s", listenAddr, certPath)
 
-		// 构造 TLS 配置，自动获取证书
-		tlsConfig := &tls.Config{
-			GetCertificate: m.GetCertificate,
-		}
-
-		// 启动 HTTPS 服务
-		ln, err = tls.Listen("tcp", ":443", tlsConfig)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		// 同时在 80 端口启动 HTTP 服务响应 ACME HTTP-01 验证请求
-		go func() {
-			httpServer := &http.Server{
-				Addr:    ":80",
-				Handler: m.HTTPHandler(nil),
-			}
-			log.Fatal(httpServer.ListenAndServe())
-		}()
-
-		log.Printf("启用 HTTPS 模式，监听 443 端口，允许域名: %v", allowedHosts)
-		return fapp, ln
-	} else {
-		// 监听指定端口
-		portText := fmt.Sprintf(":%d", cfg.UsePort)
-		if cfg.UseSelfCert != "" {
-			// 使用自签名证书模式
-			log.Println("启用自签名证书模式，监听 443 端口")
-			cer, err := tls.LoadX509KeyPair(fmt.Sprintf("%s/cert.pem", cfg.UseSelfCert), fmt.Sprintf("%s/privkey.pem", cfg.UseSelfCert))
-			if err != nil {
-				log.Fatal("加载证书失败:", err)
-			}
-
-			config := &tls.Config{
-				Certificates: []tls.Certificate{cer},
-			}
-
-			ln, err = tls.Listen("tcp", ":443", config)
-			if err != nil {
-				log.Fatal("监听端口失败:", err)
-			}
-
-			return fapp, ln
-		} else {
-			// 使用默认模式，从环境变量获取证书路径或使用默认路径
-			certsDir := config.GetEnvOrDefault(config.EnvCerts, "certs")
-			certPath := filepath.Join(certsDir, "ssl.cert")
-			keyPath := filepath.Join(certsDir, "ssl.key")
-
-			log.Printf("启用普通模式，监听 %s 端口，使用证书: %s", portText, certPath)
-
-			// Create tls certificate
-			cer, err := tls.LoadX509KeyPair(certPath, keyPath)
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			config := &tls.Config{Certificates: []tls.Certificate{cer}}
-
-			// Create custom listener
-			ln, err = tls.Listen("tcp", portText, config)
-			if err != nil {
-				panic(err)
-			}
-
-			// Start server with https/ssl enabled
-			return fapp, ln
-		}
+	cer, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		log.Fatal("加载证书失败:", err)
 	}
+
+	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cer}}
+	ln, err = tls.Listen("tcp", listenAddr, tlsConfig)
+	if err != nil {
+		log.Fatal("监听端口失败:", err)
+	}
+
+	return fapp, ln
 }
 
 func (app *App) Run() {
 	log.Fatal(app.fiberApp.Listener(app.NetListener))
+}
+
+func resolveCertPair(cfg AppConfig) (string, string) {
+	if cfg.PemCertsDir != "" {
+		return filepath.Join(cfg.PemCertsDir, "cert.pem"), filepath.Join(cfg.PemCertsDir, "privkey.pem")
+	}
+
+	certPath := filepath.Join(cfg.LocalCertsDir, "ssl.cert")
+	keyPath := filepath.Join(cfg.LocalCertsDir, "ssl.key")
+	if _, err := os.Stat(certPath); err == nil {
+		if _, err := os.Stat(keyPath); err == nil {
+			return certPath, keyPath
+		}
+	}
+
+	fmt.Printf("本地证书不存在，正在生成到: %s\n", cfg.LocalCertsDir)
+	if err := utils.GenerateNewCerts(cfg.LocalCertsDir); err != nil {
+		log.Fatalf("Failed to generate local certificates: %v", err)
+	}
+	return certPath, keyPath
 }
