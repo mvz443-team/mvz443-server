@@ -87,6 +87,8 @@ func (room *Room) resetInGameState() {
 	room.pendingEndFrame = 0
 	room.EndGameGraceActive = false
 	room.EndGameFrameID = 0
+	room.FrameHashes = make(map[uint32]map[int]uint32)
+	room.DesyncDetected = false
 	for len(room.ingameOperations) > 0 {
 		<-room.ingameOperations
 	}
@@ -354,7 +356,63 @@ func (room *Room) acceptInGameBase(player *Player, req *messages.RequestBlank) b
 	}
 
 	player.Ctx.UpdatePlayerFrame(req.FrameId, req.AckFrameId)
+	if req.HashFrameId != 0 && req.StateHash != 0 {
+		room.recordStateHash(player, req.HashFrameId, req.StateHash)
+	}
 	return true
+}
+
+// recordStateHash 汇总同一帧各客户端的状态摘要，不一致即判定分叉并广播止损。
+func (room *Room) recordStateHash(player *Player, frameID uint32, hash uint32) {
+	if player == nil || player.Ctx == nil || frameID == 0 || hash == 0 {
+		return
+	}
+	if room.FrameHashes == nil {
+		room.FrameHashes = make(map[uint32]map[int]uint32)
+	}
+	hashes := room.FrameHashes[frameID]
+	if hashes == nil {
+		hashes = make(map[int]uint32)
+		room.FrameHashes[frameID] = hashes
+	}
+	hashes[player.Ctx.Id] = hash
+
+	if len(hashes) >= 2 {
+		var first uint32
+		hasFirst := false
+		mismatch := false
+		for _, value := range hashes {
+			if !hasFirst {
+				first = value
+				hasFirst = true
+				continue
+			}
+			if value != first {
+				mismatch = true
+			}
+		}
+		if mismatch && !room.DesyncDetected {
+			room.DesyncDetected = true
+			log.Printf("🚨 检测到状态分叉 frame=%d hashes=%v", frameID, hashes)
+			resp := &messages.RoomResponse{
+				Payload: &messages.RoomResponse_Error{
+					Error: &messages.ResponseErrorMessage{
+						Message: "检测到客户端状态分叉（frame=" + strconv.FormatUint(uint64(frameID), 10) + "），本局已标记为异常",
+					},
+				},
+			}
+			room.RoomCtx.BroadcastMessage(resp, nil)
+		}
+	}
+
+	// 只保留最近 64 帧的摘要，避免长期增长
+	if len(room.FrameHashes) > 64 {
+		for id := range room.FrameHashes {
+			if id+32 < frameID {
+				delete(room.FrameHashes, id)
+			}
+		}
+	}
 }
 
 const endGameVoteTimeout = 3 * time.Second

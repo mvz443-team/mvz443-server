@@ -54,6 +54,10 @@ type Room struct {
 	EndGameGraceActive bool
 	EndGameFrameID     uint32
 
+	// 分叉检测：frameID -> playerID -> state hash
+	FrameHashes    map[uint32]map[int]uint32
+	DesyncDetected bool
+
 	// manager
 	destroyOnce    sync.Once
 	LastActiveTime time.Time  // 上次活动时间
