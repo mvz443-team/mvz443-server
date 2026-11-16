@@ -16,8 +16,8 @@ func TestResolveProcessFrameIDWindow(t *testing.T) {
 	room := newTestRoom(10)
 
 	frameID, ok := room.resolveProcessFrameID(&messages.RequestGridOperation{ProcessFrameId: 0})
-	if !ok || frameID != 14 {
-		t.Fatalf("过早的操作应被抬升到 current+4，得到 frameID=%d ok=%v", frameID, ok)
+	if !ok || frameID != 12 {
+		t.Fatalf("过早的操作应被抬升到 current+2，得到 frameID=%d ok=%v", frameID, ok)
 	}
 
 	frameID, ok = room.resolveProcessFrameID(&messages.RequestGridOperation{ProcessFrameId: 18})

@@ -121,7 +121,7 @@ go run . --pem-certs ./certs
 
 - 帧间隔为 `constants.FrameIntervalMs = 50ms`。
 - 服务端当前帧由 `RoomCtx.NextFrameID` 推进，`currentServerFrameID()` 等于 `NextFrameID - 1`。
-- 玩家操作默认安排到 `当前服务端帧 + CommandLeadFrames`，其中 `CommandLeadFrames = 4`。如果客户端请求的 `process_frame_id` 更晚，则尊重客户端请求。
+- 玩家操作默认安排到 `当前服务端帧 + CommandLeadFrames`，其中 `CommandLeadFrames = 2`。如果客户端请求的 `process_frame_id` 更晚，则尊重客户端请求。
 - `advanceOneFrame()` 每 tick 生成一个 `InGameResponse`，对该帧操作排序、编号、写入 `frameHistory`，然后推进下一帧。
 - `syncClientFrames()` 根据玩家 `LatestAckFrameID` 从历史帧中补发未确认帧，每次最多补发 `maxResendPerSync = 32` 帧。
 - `pruneFrameHistory()` 会删除所有玩家都 ACK 过的历史帧，或超过 `maxHistoryFrames = 600` 的旧帧。

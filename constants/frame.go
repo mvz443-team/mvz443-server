@@ -27,4 +27,6 @@ func resolveFrameIntervalMs() int {
 }
 
 const MaxDelayFrames uint32 = 10 // 最大延迟帧数
-const CommandLeadFrames uint32 = 4
+// CommandLeadFrames 是操作最早可以落在服务端当前帧之后的帧数。
+// 2 帧在回滚开销与点击手感之间折中；改大后种植/星碎/铲除会明显发粘。
+const CommandLeadFrames uint32 = 2

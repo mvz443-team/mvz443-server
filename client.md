@@ -62,7 +62,7 @@ WebSocket 使用二进制 Protobuf。客户端 `sync.ts` 收到 `ArrayBuffer` �
 
 客户端和服务端都使用 50ms 作为逻辑帧间隔：
 
-- 客户端常量：`public/constants` 中 `FrameInterval = 50`
+- 客户端常量：`mvz443/src/constants/physics.ts` 中 `LEGACY_BALANCE_FRAME_INTERVAL_MS = 50`，`TickerManager.frameInterval` 与 `SyncManager.frameIntervalMs` 均只读固定为该值
 - 服务端常量：`constants.FrameIntervalMs = 50`
 
 战斗开始时，`SyncManager.Load()` 创建：
@@ -97,7 +97,7 @@ processFrameId = 当前客户端帧 + 网络延迟估计帧数 + 2
 服务端收到后会重新取更保守的值：
 
 ```text
-processFrameId = max(客户端请求值, 当前服务端帧 + 4)
+processFrameId = max(客户端请求值, 当前服务端帧 + 2)
 ```
 
 因此最终以服务端回传的 `InGameOperation.processFrameId` 为准。客户端如果看到服务端帧中的 `processFrameId` 和本地即将消费的帧不一致，会打印警告，但仍按服务端帧内容执行。
