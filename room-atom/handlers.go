@@ -255,6 +255,9 @@ func (room *Room) HandleRequestReady(player *Player, req *messages.RequestReady)
 	}
 
 	player.IsReady = req.IsReady
+	if req.IsReady {
+		player.Loadout = req.Loadout
+	}
 	log.Printf("🔵 HandleRequestReady: Set player %d isReady to %v", player.GetID(), req.IsReady)
 
 	// 检查所有玩家状态
@@ -283,6 +286,7 @@ func (room *Room) HandleRequestReady(player *Player, req *messages.RequestReady)
 			return true
 		})
 		sort.Slice(playerIDs, func(i, j int) bool { return playerIDs[i] < playerIDs[j] })
+		canonicalLoadouts := room.canonicalPlayerLoadouts()
 
 		room.RoomCtx.Players.Range(func(_ int, value *clients.Player) bool {
 			if value == nil || value.Ctx == nil {
@@ -293,6 +297,7 @@ func (room *Room) HandleRequestReady(player *Player, req *messages.RequestReady)
 				Seed:           room.Seed,
 				MyId:           uint32(value.Ctx.Id),
 				PlayerIds:      playerIDs,
+				Loadouts:       canonicalLoadouts,
 			}
 			resp := &messages.RoomResponse{
 				Payload: &messages.RoomResponse_AllReady{

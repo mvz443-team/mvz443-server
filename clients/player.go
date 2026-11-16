@@ -2,6 +2,7 @@ package clients
 
 import (
 	"log"
+	messages "mvzserver/messages/pb"
 	"sync"
 
 	"github.com/gofiber/websocket/v2"
@@ -51,6 +52,8 @@ type Player struct {
 	// 游戏数据
 	LastEnergySum  int32 // 上一次用户的Energy
 	LastStarShards int32 // 上一次用户的StarShards
+	// 开局确定性配置，由 ready 请求上报，AllReady 时规范化广播给所有人
+	Loadout *messages.LoadoutSnapshot
 }
 
 func NewPlayer(ctx *ClientCtx, sendChan chan<- *PlayerMessage) Player {
@@ -68,6 +71,7 @@ func (p *Player) ResetData() {
 	p.IsLoaded = false
 	p.LastEnergySum = 0
 	p.LastStarShards = 0
+	p.Loadout = nil
 	if p.Ctx != nil {
 		p.Ctx.LatestFrameID.Store(0)    // 重置最新帧ID
 		p.Ctx.LatestAckFrameID.Store(0) // 重置最新确认帧ID
