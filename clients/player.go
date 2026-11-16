@@ -95,9 +95,8 @@ func (p *Player) Write(bytes []byte) {
 
 	err := p.Ctx.SafeWriteMessage(websocket.BinaryMessage, bytes)
 	if err != nil {
+		// 成功写不打印日志：每帧广播 × 玩家数会产生大量同步 IO
 		log.Printf("🔴 Failed to write message to player %d: %v", p.GetID(), err)
-	} else {
-		log.Printf("🟢 Message written to player %d, length: %d", p.GetID(), len(bytes))
 	}
 	// TODO: 错判断， 重连
 }

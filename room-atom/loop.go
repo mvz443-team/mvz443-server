@@ -143,8 +143,7 @@ func (room *Room) StartServeClient(player *clients.Player) {
 			return
 		}
 
-		log.Printf("🟡 Received message from player %d, type: %d, length: %d", player.GetID(), messageType, len(data))
-
+		// 热路径不打印每条消息日志，避免 20Hz × 玩家数 的同步 IO 开销
 		// 忽略非二进制消息
 		if messageType != websocket.BinaryMessage {
 			continue

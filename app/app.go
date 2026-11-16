@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -60,7 +61,15 @@ func CreateFiberApp(cfg AppConfig, serverHandler *handlers.ServerHandler) (fapp 
 	}))
 
 	// 注册路由（包括 websocket 和其它接口）
-	fapp.Get("/ws", websocket.New(serverHandler.HandleWS))
+	// ALLOWED_ORIGINS 未设置时保持原有宽松行为；设置后按逗号分隔白名单校验 Origin。
+	wsConfig := websocket.Config{}
+	if origins := strings.TrimSpace(os.Getenv("ALLOWED_ORIGINS")); origins != "" {
+		wsConfig.Origins = strings.Split(origins, ",")
+		for i := range wsConfig.Origins {
+			wsConfig.Origins[i] = strings.TrimSpace(wsConfig.Origins[i])
+		}
+	}
+	fapp.Get("/ws", websocket.New(serverHandler.HandleWS, wsConfig))
 	fapp.Get("/list", serverHandler.HandleListRoom)
 
 	listenAddr := net.JoinHostPort(cfg.Host, cfg.Port)

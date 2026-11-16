@@ -39,6 +39,8 @@ func (sh *ServerHandler) HandleListRoom(c *fiber.Ctx) error {
 }
 
 func (sh *ServerHandler) HandleWS(c *websocket.Conn) {
+	// 协议包很小，限制单个 WS 消息大小，防止超大包直接进内存
+	c.SetReadLimit(8 * 1024)
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("处理玩家注册时捕获到 Panic: %v\n", r)
