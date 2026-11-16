@@ -54,6 +54,8 @@ type Player struct {
 	LastStarShards int32 // 上一次用户的StarShards
 	// 开局确定性配置，由 ready 请求上报，AllReady 时规范化广播给所有人
 	Loadout *messages.LoadoutSnapshot
+	// 连接代数：重连后自增，旧的读循环退出时不得注销新连接
+	ConnectionEpoch int
 }
 
 func NewPlayer(ctx *ClientCtx, sendChan chan<- *PlayerMessage) Player {

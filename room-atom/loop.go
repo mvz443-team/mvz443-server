@@ -54,6 +54,9 @@ func (room *Room) Run() {
 		case player := <-room.unregister:
 			room.handleUnregister(player)
 
+		case request := <-room.reconnect:
+			room.handleReconnect(request)
+
 		// 2. 处理玩家发来的具体业务消息
 		// channel 接收所有玩家消息
 		case message := <-room.incomingMessages: // channel 接收所有玩家消息
@@ -72,6 +75,7 @@ func (room *Room) Run() {
 func (room *Room) StartServeClient(player *clients.Player) {
 	// 基础信息
 	ctx := player.Ctx
+	epoch := player.ConnectionEpoch
 	log.Printf("🟡 StartServeClient for player %d", player.GetID())
 
 	// 检查基本有效性
@@ -84,6 +88,12 @@ func (room *Room) StartServeClient(player *clients.Player) {
 
 	defer func() {
 		log.Printf("🟡 StartServeClient ending for player %d", player.GetID())
+
+		// 连接代数已变化说明玩家已重连，旧读循环不得注销新连接。
+		if player.ConnectionEpoch != epoch {
+			log.Printf("🟡 Skip unregister for player %d (reconnected, epoch %d -> %d)", player.GetID(), epoch, player.ConnectionEpoch)
+			return
+		}
 
 		// 发送 unregister 信号，通知房间移除这个玩家
 		// 使用非阻塞发送

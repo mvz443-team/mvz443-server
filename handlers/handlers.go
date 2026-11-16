@@ -58,6 +58,43 @@ func (sh *ServerHandler) HandleWS(c *websocket.Conn) {
 
 	_key := c.Query("key") // 密钥
 
+	// 断线重连：InGame 阶段保留席位，按房间号 + 玩家 id + 密钥重新绑定连接。
+	if c.Query("reconnect") == "1" {
+		myId, err := strconv.Atoi(c.Query("my_id"))
+		if err != nil || roomId == -1 {
+			utils.WriteLobbyResponse(c, &messages.LobbyResponse{
+				Payload: &messages.LobbyResponse_JoinRoomFailed{
+					JoinRoomFailed: &messages.ResponseJoinRoomFailed{Message: "重连参数不完整"},
+				},
+			})
+			c.Close()
+			return
+		}
+		targetRoom := sh.RoomMnager.GetRoom(roomId)
+		if targetRoom == nil {
+			utils.WriteLobbyResponse(c, &messages.LobbyResponse{
+				Payload: &messages.LobbyResponse_JoinRoomFailed{
+					JoinRoomFailed: &messages.ResponseJoinRoomFailed{Message: "房间不存在，无法重连"},
+				},
+			})
+			c.Close()
+			return
+		}
+		player := targetRoom.ReconnectPlayer(c, myId, _key)
+		if player == nil {
+			utils.WriteLobbyResponse(c, &messages.LobbyResponse{
+				Payload: &messages.LobbyResponse_JoinRoomFailed{
+					JoinRoomFailed: &messages.ResponseJoinRoomFailed{Message: "重连失败或已超出可恢复窗口"},
+				},
+			})
+			c.Close()
+			return
+		}
+		// 重连不发送 JoinRoomSuccess，客户端保持 InGame 阶段等待补帧。
+		targetRoom.StartServeClient(player)
+		return
+	}
+
 	// TODO: 多一个参数, create / join，
 	// 如果是create,则创建新房间,如果是join,则如果无指定id，返回失败信息
 

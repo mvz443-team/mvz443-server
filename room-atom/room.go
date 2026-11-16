@@ -14,6 +14,8 @@ import (
 	"runtime/debug"
 	"sync"
 	"time"
+
+	"github.com/gofiber/websocket/v2"
 )
 
 type FrameSubmission struct {
@@ -30,7 +32,7 @@ type Room struct {
 	// 网络
 	register         chan *clients.Player
 	unregister       chan *clients.Player
-	reconnect        chan clients.ReconnectRequest
+	reconnect        chan *ReconnectRequest
 	incomingMessages chan *PlayerMessage
 	// 游戏逻辑操作管道
 	ingameOperations chan *messages.InGameOperation
@@ -66,6 +68,14 @@ type Room struct {
 	StopChan       chan<- int // 通知房间管理器的停止信号通道
 }
 
+// ReconnectRequest 由 HTTP goroutine 投递给房间主循环，避免并发修改玩家状态。
+type ReconnectRequest struct {
+	Conn     *websocket.Conn
+	PlayerID int
+	Key      string
+	Reply    chan *clients.Player
+}
+
 func NewRoom(id int, stopChan chan int) *Room {
 	gameOperationChan := make(chan *messages.InGameOperation, 128)
 	logic := gamelogic.NewGameLogic(gameOperationChan)
@@ -89,7 +99,7 @@ func NewRoom(id int, stopChan chan int) *Room {
 		// 网络
 		register:         make(chan *clients.Player, 8), // 添加缓冲区
 		unregister:       make(chan *clients.Player, 8), // 添加缓冲区
-		reconnect:        make(chan clients.ReconnectRequest),
+		reconnect:        make(chan *ReconnectRequest, 8),
 		incomingMessages: make(chan *PlayerMessage, 128),
 		ingameOperations: gameOperationChan,
 		scheduledFrames:  make(map[uint32]*FrameSubmission),

@@ -10,6 +10,7 @@ import (
 
 	"runtime/debug"
 	"sort"
+	"time"
 
 	"github.com/gofiber/websocket/v2"
 	"google.golang.org/protobuf/proto"
@@ -171,6 +172,17 @@ func (room *Room) handleUnregister(player *clients.Player) {
 	if player == nil || player.Ctx == nil {
 		return
 	}
+
+	// InGame 断线保留席位，等待同 id 重连；历史帧窗口即重连宽限期。
+	if room.GameStage.EqualTo(constants.STAGE_InGame) {
+		player.Ctx.State = constants.PlayerStateDisconnected
+		if player.Ctx.IsConnected() {
+			player.Ctx.Close()
+		}
+		log.Printf("🟡 玩家 %d 在 InGame 掉线，保留席位等待重连", player.Ctx.Id)
+		return
+	}
+
 	room.RoomCtx.DelUser(player.Ctx.Id) // 向 context 中注销用户
 	// 关闭连接
 	if player.Ctx.IsConnected() {
@@ -178,6 +190,66 @@ func (room *Room) handleUnregister(player *clients.Player) {
 	}
 	// 删除实例
 	// 广播人数变化，如果状态是 Preparing/InGame，可能需要特殊处理
+}
+
+// handleReconnect 在房间主循环内把新连接绑定到保留的玩家席位。
+func (room *Room) handleReconnect(request *ReconnectRequest) {
+	reply := func(player *clients.Player) {
+		if request.Reply != nil {
+			request.Reply <- player
+		}
+	}
+
+	if request == nil || !room.GameStage.EqualTo(constants.STAGE_InGame) || room.key != request.Key {
+		reply(nil)
+		return
+	}
+
+	var target *clients.Player
+	room.RoomCtx.Players.Range(func(_ int, value *clients.Player) bool {
+		if value != nil && value.Ctx != nil && value.Ctx.Id == request.PlayerID {
+			target = value
+			return false
+		}
+		return true
+	})
+	if target == nil {
+		reply(nil)
+		return
+	}
+
+	newCtx := clients.NewClientCtx(request.Conn, request.PlayerID)
+	newCtx.LatestFrameID.Store(target.Ctx.LatestFrameID.Load())
+	newCtx.LatestAckFrameID.Store(target.Ctx.LatestAckFrameID.Load())
+	newCtx.ReconnectionToken = target.Ctx.ReconnectionToken
+	newCtx.State = constants.PlayerStateConnected
+
+	oldCtx := target.Ctx
+	target.Ctx = newCtx
+	target.ConnectionEpoch++
+	if oldCtx.IsConnected() {
+		oldCtx.Close()
+	}
+
+	log.Printf("🟢 玩家 %d 重连成功，从帧 %d 继续", request.PlayerID, newCtx.LatestAckFrameID.Load())
+	reply(target)
+}
+
+// ReconnectPlayer 供 HTTP goroutine 调用，把连接切换请求投递给房间主循环。
+func (room *Room) ReconnectPlayer(conn *websocket.Conn, playerID int, key string) *clients.Player {
+	reply := make(chan *clients.Player, 1)
+	request := &ReconnectRequest{Conn: conn, PlayerID: playerID, Key: key, Reply: reply}
+	select {
+	case room.reconnect <- request:
+	case <-time.After(3 * time.Second):
+		return nil
+	}
+	select {
+	case player := <-reply:
+		return player
+	case <-time.After(3 * time.Second):
+		return nil
+	}
 }
 
 // 处理玩家WS消息
