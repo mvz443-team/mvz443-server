@@ -41,3 +41,15 @@ func TestCheckpointMismatchIsIgnored(t *testing.T) {
 		t.Fatal("摘要不一致不得确认 checkpoint")
 	}
 }
+
+func TestReplayIncludesAcceptedCheckpointSnapshot(t *testing.T) {
+	room := newTestRoom(200)
+	room.Checkpoints = make(map[uint32]*stateCheckpoint)
+	p1, p2 := testHashPlayer(100), testHashPlayer(101)
+	inline := `{"version":1,"hash":"abcd","payload":{"values":{}}}`
+	room.recordCheckpoint(p1, &messages.RequestBlank{HashFrameId: 200, StateHashHex: "abcd", InlineSnapshotJson: inline})
+	room.recordCheckpoint(p2, &messages.RequestBlank{HashFrameId: 200, StateHashHex: "abcd", InlineSnapshotJson: inline})
+	if got := room.checkpointSnapshotJSON(); got != inline {
+		t.Fatalf("replay 应携带已确认快照，得到 %q", got)
+	}
+}

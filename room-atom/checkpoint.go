@@ -98,11 +98,24 @@ func (room *Room) sendReplayFromCheckpoint(player *Player) bool {
 	room.RoomCtx.SendMessageToUserByPlayer(&messages.RoomResponse{
 		Payload: &messages.RoomResponse_ReplayFrames{
 			ReplayFrames: &messages.ResponseReplayFrames{
-				Frames:       frames,
-				FromFrameId:  fromFrame,
-				ToFrameId:    toFrame,
+				Frames:             frames,
+				FromFrameId:        fromFrame,
+				ToFrameId:          toFrame,
+				CheckpointFrameId:  room.LastCheckpointFrame,
+				InlineSnapshotJson: room.checkpointSnapshotJSON(),
 			},
 		},
 	}, player)
 	return true
+}
+
+func (room *Room) checkpointSnapshotJSON() string {
+	if room.LastCheckpointFrame == 0 {
+		return ""
+	}
+	checkpoint := room.Checkpoints[room.LastCheckpointFrame]
+	if checkpoint == nil || !checkpoint.accepted {
+		return ""
+	}
+	return checkpoint.inline
 }
