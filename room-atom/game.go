@@ -58,6 +58,10 @@ func inGameOperationUID(operation *messages.InGameOperation) uint32 {
 		if payload.CardPlant != nil && payload.CardPlant.Base != nil {
 			return payload.CardPlant.Base.Uid
 		}
+	case *messages.InGameOperation_Error:
+		if payload.Error != nil {
+			return payload.Error.Uid
+		}
 	}
 
 	return maxOperationUID
@@ -143,6 +147,19 @@ func (room *Room) operationSignature(operation *messages.InGameOperation) string
 			strconv.FormatUint(uint64(payload.UseStarShards.Base.Uid), 10),
 			strconv.FormatUint(uint64(payload.UseStarShards.Base.Col), 10),
 			strconv.FormatUint(uint64(payload.UseStarShards.Base.Row), 10),
+		}, ":")
+	case *messages.InGameOperation_Error:
+		data := payload.Error
+		if data == nil {
+			data = &messages.ResponseErrorMessage{}
+		}
+		return strings.Join([]string{
+			strconv.FormatUint(uint64(operation.ProcessFrameId), 10),
+			"error",
+			strconv.FormatUint(uint64(data.Uid), 10),
+			strconv.FormatUint(uint64(data.ClientOpSeq), 10),
+			strconv.FormatUint(uint64(data.Col), 10),
+			strconv.FormatUint(uint64(data.Row), 10),
 		}, ":")
 	default:
 		return strings.Join([]string{
@@ -282,12 +299,43 @@ func (room *Room) pruneFrameHistory() {
 	}
 }
 
-func (room *Room) resolveProcessFrameID(baseReq *messages.RequestGridOperation) uint32 {
-	frameID := room.currentServerFrameID() + constants.CommandLeadFrames
+// resolveProcessFrameID 把操作限制在 [current+CommandLeadFrames, current+MaxDelayFrames] 窗口内。
+// 第二个返回值为 false 表示请求试图调度过远的未来帧，应被拒绝。
+func (room *Room) resolveProcessFrameID(baseReq *messages.RequestGridOperation) (uint32, bool) {
+	current := room.currentServerFrameID()
+	minFrameID := current + constants.CommandLeadFrames
+	maxFrameID := current + constants.MaxDelayFrames
+
+	frameID := minFrameID
 	if baseReq != nil && baseReq.ProcessFrameId > frameID {
 		frameID = baseReq.ProcessFrameId
 	}
-	return frameID
+	if frameID > maxFrameID {
+		return maxFrameID, false
+	}
+	return frameID, true
+}
+
+// rejectOperation 把失败原因作为确定性错误操作排入目标帧，
+// 客户端收到后可撤销乐观预测并提示具体原因。
+func (room *Room) rejectOperation(player *Player, baseReq *messages.RequestGridOperation, frameID uint32, reason string) {
+	if player == nil || baseReq == nil {
+		return
+	}
+	errorOp := &messages.InGameOperation{
+		ProcessFrameId: frameID,
+		Payload: &messages.InGameOperation_Error{
+			Error: &messages.ResponseErrorMessage{
+				Message:        reason,
+				Uid:            uint32(player.GetID()),
+				ClientOpSeq:    baseReq.ClientOpSeq,
+				Col:            baseReq.Col,
+				Row:            baseReq.Row,
+				ProcessFrameId: frameID,
+			},
+		},
+	}
+	room.recordOperationSubmission(frameID, errorOp)
 }
 
 func (room *Room) acceptInGameBase(player *Player, req *messages.RequestBlank) bool {

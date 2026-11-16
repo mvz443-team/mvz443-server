@@ -5,6 +5,22 @@ import (
 	messages "mvzserver/messages/pb"
 )
 
+func invalidGridOperation(player *clients.Player, request *messages.RequestGridOperation, reason string) *messages.InGameOperation {
+	return &messages.InGameOperation{
+		ProcessFrameId: request.ProcessFrameId,
+		Payload: &messages.InGameOperation_Error{
+			Error: &messages.ResponseErrorMessage{
+				Message:        reason,
+				Uid:            uint32(player.GetID()),
+				ClientOpSeq:    request.ClientOpSeq,
+				Col:            request.Col,
+				Row:            request.Row,
+				ProcessFrameId: request.ProcessFrameId,
+			},
+		},
+	}
+}
+
 func (g *GameLogic) PlantCard(player *clients.Player, request *messages.RequestCardPlant) *messages.InGameOperation {
 	gridOp := &messages.ResponseGridOperation{
 		Uid: uint32(player.GetID()),
@@ -20,17 +36,13 @@ func (g *GameLogic) PlantCard(player *clients.Player, request *messages.RequestC
 
 	if request.Base.Col < 0 || request.Base.Col >= MAXCOLS ||
 		request.Base.Row < 0 || request.Base.Row >= MAXROWS {
-		// 无效的grid
-		return nil
+		return invalidGridOperation(player, request.Base, "目标格子超出战场范围")
 	}
 	grid := g.getFrameGrid(request.Base.ProcessFrameId)
-	// 判断这个grid有没有做过操作
 	if grid[request.Base.Row][request.Base.Col] {
-		// true=> 有操作
-		return nil
+		return invalidGridOperation(player, request.Base, "该格子在目标帧已被其他操作占用")
 	}
 
-	// 成功
 	grid[request.Base.Row][request.Base.Col] = true
 
 	return &messages.InGameOperation{
@@ -54,16 +66,12 @@ func (g *GameLogic) RemoveCard(player *clients.Player, request *messages.Request
 
 	if request.Base.Col < 0 || request.Base.Col >= MAXCOLS ||
 		request.Base.Row < 0 || request.Base.Row >= MAXROWS {
-		// 铲除失败不会有回复
-		return nil
+		return invalidGridOperation(player, request.Base, "目标格子超出战场范围")
 	}
 
 	grid := g.getFrameGrid(request.Base.ProcessFrameId)
-	// 判断这个grid有没有做过操作
 	if grid[request.Base.Row][request.Base.Col] {
-		// true=> 有操作
-		// 铲除失败不会有回复
-		return nil
+		return invalidGridOperation(player, request.Base, "该格子在目标帧已被其他操作占用")
 	}
 
 	grid[request.Base.Row][request.Base.Col] = true
@@ -89,16 +97,14 @@ func (g *GameLogic) UseStarShards(player *clients.Player, request *messages.Requ
 
 	if request.Base.Col < 0 || request.Base.Col >= MAXCOLS ||
 		request.Base.Row < 0 || request.Base.Row >= MAXROWS {
-		return nil
+		return invalidGridOperation(player, request.Base, "目标格子超出战场范围")
 	}
 
 	grid := g.getFrameGrid(request.Base.ProcessFrameId)
-	// 判断这个grid有没有做过操作
 	if grid[request.Base.Row][request.Base.Col] {
-		// true=> 有操作
-		return nil
+		return invalidGridOperation(player, request.Base, "该格子在目标帧已被其他操作占用")
 	}
-	// 成功
+
 	grid[request.Base.Row][request.Base.Col] = true
 
 	return &messages.InGameOperation{

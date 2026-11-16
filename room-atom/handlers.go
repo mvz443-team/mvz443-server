@@ -321,6 +321,10 @@ func (room *Room) HandleRequestReady(player *Player, req *messages.RequestReady)
 }
 
 func (room *Room) HandleRequestChooseMap(player *Player, req *messages.RequestChooseMap) {
+	// 只有房主可以推进到选卡阶段
+	if player == nil || player.Ctx == nil || room.RoomCtx.OwnerUserID != player.Ctx.Id {
+		return
+	}
 	// 只能在 STAGE_InLobby 阶段处理
 	if !room.GameStage.EqualTo(constants.STAGE_InLobby) {
 		return
@@ -459,11 +463,16 @@ func (room *Room) HandleRequestCardPlant(player *Player, req *messages.RequestCa
 	lastFrameID := player.Ctx.LatestFrameID.Load()
 	lastAckFrameID := player.Ctx.LatestAckFrameID.Load()
 
-	// 此帧想要发生的时机晚于下一帧序号
-	req.Base.ProcessFrameId = room.resolveProcessFrameID(req.Base)
+	// 此帧想要发生的时机晚于下一帧序号，但不允许调度过远的未来帧
+	processFrameID, validFrame := room.resolveProcessFrameID(req.Base)
+	if !validFrame {
+		room.rejectOperation(player, req.Base, processFrameID, "process_frame_id 超出允许窗口")
+		return
+	}
+	req.Base.ProcessFrameId = processFrameID
 
 	if !room.CouldAffordable(player, req.Base.Base, req.Cost, 0, req.EnergySum, req.StarShardsSum, lastFrameID, lastAckFrameID) {
-		// 无法负担
+		room.rejectOperation(player, req.Base, processFrameID, "资源不足或自报资源非法")
 		return
 	}
 	operation := room.Logic.PlantCard(player, req)
@@ -490,8 +499,13 @@ func (room *Room) HandleRequestRemovePlant(player *Player, req *messages.Request
 	if !room.acceptInGameBase(player, req.Base.Base) {
 		return
 	}
-	// 此帧想要发生的时机晚于下一帧序号
-	req.Base.ProcessFrameId = room.resolveProcessFrameID(req.Base)
+	// 此帧想要发生的时机晚于下一帧序号，但不允许调度过远的未来帧
+	processFrameID, validFrame := room.resolveProcessFrameID(req.Base)
+	if !validFrame {
+		room.rejectOperation(player, req.Base, processFrameID, "process_frame_id 超出允许窗口")
+		return
+	}
+	req.Base.ProcessFrameId = processFrameID
 
 	operation := room.Logic.RemoveCard(player, req)
 	room.recordOperationSubmission(req.Base.ProcessFrameId, operation)
@@ -522,11 +536,16 @@ func (room *Room) HandleRequestStarShards(player *Player, req *messages.RequestS
 	lastFrameID := player.Ctx.LatestFrameID.Load()
 	lastAckFrameID := player.Ctx.LatestAckFrameID.Load()
 
-	// 此帧想要发生的时机晚于下一帧序号
-	req.Base.ProcessFrameId = room.resolveProcessFrameID(req.Base)
+	// 此帧想要发生的时机晚于下一帧序号，但不允许调度过远的未来帧
+	processFrameID, validFrame := room.resolveProcessFrameID(req.Base)
+	if !validFrame {
+		room.rejectOperation(player, req.Base, processFrameID, "process_frame_id 超出允许窗口")
+		return
+	}
+	req.Base.ProcessFrameId = processFrameID
 
 	if !room.CouldAffordable(player, req.Base.Base, 0, req.Cost, req.EnergySum, req.StarShardsSum, lastFrameID, lastAckFrameID) {
-		// 无法负担
+		room.rejectOperation(player, req.Base, processFrameID, "资源不足或自报资源非法")
 		return
 	}
 	operation := room.Logic.UseStarShards(player, req)
