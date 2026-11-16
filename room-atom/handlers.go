@@ -18,6 +18,9 @@ import (
 type Player = clients.Player
 type PlayerMessage = clients.PlayerMessage
 
+// 单次操作允许的最大消耗，用于拦截负数成本与明显异常的自报值
+const maxOperationCost int32 = 100000
+
 // WS入口
 func (room *Room) HandleClientJoin(c *websocket.Conn) {
 	log.Printf("🟢 Client connecting to room %d", room.ID)
@@ -483,6 +486,10 @@ func (room *Room) HandleRequestCardPlant(player *Player, req *messages.RequestCa
 	}
 	req.Base.ProcessFrameId = processFrameID
 
+	if req.Cost < 0 || req.Cost > maxOperationCost || req.EnergySum < 0 || req.StarShardsSum < 0 {
+		room.rejectOperation(player, req.Base, processFrameID, "非法的消耗或资源数值")
+		return
+	}
 	if !room.CouldAffordable(player, req.Base.Base, req.Cost, 0, req.EnergySum, req.StarShardsSum, lastFrameID, lastAckFrameID) {
 		room.rejectOperation(player, req.Base, processFrameID, "资源不足或自报资源非法")
 		return
@@ -556,6 +563,10 @@ func (room *Room) HandleRequestStarShards(player *Player, req *messages.RequestS
 	}
 	req.Base.ProcessFrameId = processFrameID
 
+	if req.Cost < 0 || req.Cost > maxOperationCost || req.EnergySum < 0 || req.StarShardsSum < 0 {
+		room.rejectOperation(player, req.Base, processFrameID, "非法的消耗或资源数值")
+		return
+	}
 	if !room.CouldAffordable(player, req.Base.Base, 0, req.Cost, req.EnergySum, req.StarShardsSum, lastFrameID, lastAckFrameID) {
 		room.rejectOperation(player, req.Base, processFrameID, "资源不足或自报资源非法")
 		return
