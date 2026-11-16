@@ -438,7 +438,14 @@ func (room *Room) HandleRequestLoaded(player *Player, req *messages.RequestLoade
 // Return: 这个帧是否可以采用（没有迟到）
 func (room *Room) HandleRequestBlank(player *Player, req *messages.RequestBlank) bool {
 	if !room.acceptInGameBase(player, req) {
-		return false
+		// 结束后保留短暂补发窗口，让落后客户端补齐到权威结束帧
+		if !room.EndGameGraceActive || player == nil || player.Ctx == nil || req == nil {
+			return false
+		}
+		if room.EndGameFrameID != 0 && req.FrameId > room.EndGameFrameID+constants.CommandLeadFrames {
+			return false
+		}
+		player.Ctx.UpdatePlayerFrame(req.FrameId, req.AckFrameId)
 	}
 	room.pruneFrameHistory()
 	room.syncAllClients()
@@ -564,24 +571,11 @@ func (room *Room) HandleRequestEndGame(player *Player, req *messages.RequestEndG
 	if !room.GameStage.EqualTo(constants.STAGE_InGame) {
 		return
 	}
+	if req == nil || req.GameResult > 1 {
+		return
+	}
 
-	// 之后进入 PostGame 阶段
-	room.GameStage.Store(constants.STAGE_PostGame)
-	if room.RoomCtx.GameTicker != nil {
-		room.RoomCtx.GameTicker.Stop()
-		room.RoomCtx.GameTicker = nil
-	}
-	room.resetInGameState()
-	// 广播game end
-	payload := messages.ResponseGameEnd{
-		GameResult: req.GameResult,
-	}
-	resp := &messages.RoomResponse{
-		Payload: &messages.RoomResponse_GameEnd{
-			GameEnd: &payload,
-		},
-	}
-	room.RoomCtx.BroadcastMessage(resp, nil)
-
-	// 重置房间允许下一场游戏
+	// 不在这里直接结算：先记录投票，等待其他玩家确认或超时，
+	// 再由服务端把结束事件写入统一逻辑帧（见 scheduleAuthoritativeEnd）。
+	room.RegisterEndGameVote(player, req.GameResult)
 }

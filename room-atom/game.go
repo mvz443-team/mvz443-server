@@ -4,6 +4,7 @@ package roomatom
 // GameLogic 结构体、ProcessFrame、EnqueueAction、游戏相关方法
 
 import (
+	"log"
 	"mvzserver/constants"
 	messages "mvzserver/messages/pb"
 	"sort"
@@ -80,6 +81,12 @@ func (room *Room) resetInGameState() {
 	room.scheduledFrames = make(map[uint32]*FrameSubmission)
 	room.frameHistory = make(map[uint32]*messages.InGameResponse)
 	room.Logic.Reset()
+	room.EndGameVotes = make(map[int]uint32)
+	room.EndGameFirstFrame = 0
+	room.EndGameDeadline = time.Time{}
+	room.pendingEndFrame = 0
+	room.EndGameGraceActive = false
+	room.EndGameFrameID = 0
 	for len(room.ingameOperations) > 0 {
 		<-room.ingameOperations
 	}
@@ -350,6 +357,128 @@ func (room *Room) acceptInGameBase(player *Player, req *messages.RequestBlank) b
 	return true
 }
 
+const endGameVoteTimeout = 3 * time.Second
+
+// RegisterEndGameVote 记录玩家上报的胜负结果；不立刻结束房间，等待另一端确认。
+func (room *Room) RegisterEndGameVote(player *Player, result uint32) {
+	if player == nil || player.Ctx == nil {
+		return
+	}
+	if room.EndGameVotes == nil {
+		room.EndGameVotes = make(map[int]uint32)
+	}
+	if _, exists := room.EndGameVotes[player.Ctx.Id]; exists {
+		// 重复上报视为幂等，忽略
+		return
+	}
+	room.EndGameVotes[player.Ctx.Id] = result
+	if room.EndGameFirstFrame == 0 {
+		room.EndGameFirstFrame = player.Ctx.LatestFrameID.Load()
+	}
+	if len(room.EndGameVotes) == 1 {
+		room.EndGameDeadline = time.Now().Add(endGameVoteTimeout)
+	}
+	if room.allPlayersVoted() {
+		room.scheduleAuthoritativeEnd()
+	}
+}
+
+func (room *Room) allPlayersVoted() bool {
+	total := 0
+	allVoted := true
+	room.RoomCtx.Players.Range(func(_ int, value *Player) bool {
+		if value == nil || value.Ctx == nil {
+			return true
+		}
+		total++
+		if _, exists := room.EndGameVotes[value.Ctx.Id]; !exists {
+			allVoted = false
+		}
+		return true
+	})
+	return total > 0 && allVoted
+}
+
+func (room *Room) decideEndGameResult() (uint32, bool) {
+	var first uint32
+	hasFirst := false
+	agree := true
+	for _, result := range room.EndGameVotes {
+		if !hasFirst {
+			first = result
+			hasFirst = true
+			continue
+		}
+		if result != first {
+			agree = false
+		}
+	}
+	if !agree {
+		return 0, false
+	}
+	if first == 1 {
+		return 1, true
+	}
+	return 0, true
+}
+
+// scheduleAuthoritativeEnd 把结束事件写入统一的未来逻辑帧，保证所有端在同一帧结束。
+func (room *Room) scheduleAuthoritativeEnd() {
+	if room.pendingEndFrame != 0 {
+		return
+	}
+	result, consistent := room.decideEndGameResult()
+	if !consistent {
+		log.Printf("⚠️ end_game 结果冲突，按异常对局判负")
+		result = 0
+	}
+	endFrame := room.currentServerFrameID() + constants.CommandLeadFrames
+	if room.EndGameFirstFrame+1 > endFrame {
+		endFrame = room.EndGameFirstFrame + 1
+	}
+	event := &messages.InGameOperation{
+		ProcessFrameId: endFrame,
+		Payload: &messages.InGameOperation_GameEvent{
+			GameEvent: &messages.ResponseGameEvent{
+				EventType: 0x4000,
+				Message:   strconv.FormatUint(uint64(result), 10),
+			},
+		},
+	}
+	room.recordOperationSubmission(endFrame, event)
+	room.pendingEndFrame = endFrame
+	room.EndGameFrameID = endFrame
+	log.Printf("🏁 权威结束事件排入帧 %d，结果=%d", endFrame, result)
+}
+
+// tickEndGameArbitration 在每次 tick 中推进投票超时与结束帧落地。
+func (room *Room) tickEndGameArbitration() {
+	if room.pendingEndFrame != 0 {
+		if room.currentServerFrameID() >= room.pendingEndFrame {
+			room.enterPostGameAfterEndFrame()
+		}
+		return
+	}
+	if len(room.EndGameVotes) > 0 && !room.EndGameDeadline.IsZero() && time.Now().After(room.EndGameDeadline) {
+		log.Printf("⌛ end_game 投票超时，按异常对局判负")
+		room.scheduleAuthoritativeEnd()
+	}
+}
+
+func (room *Room) enterPostGameAfterEndFrame() {
+	if !room.GameStage.EqualTo(constants.STAGE_InGame) {
+		return
+	}
+	room.GameStage.Store(constants.STAGE_PostGame)
+	if room.RoomCtx.GameTicker != nil {
+		room.RoomCtx.GameTicker.Stop()
+		room.RoomCtx.GameTicker = nil
+	}
+	// 不立即 resetInGameState：保留历史帧，供落后客户端补齐到结束帧后再自行结束。
+	room.EndGameGraceActive = true
+	log.Printf("🟢 房间进入 PostGame，结束帧=%d，保留历史帧供补发", room.EndGameFrameID)
+}
+
 // 定时器触发的广播转发游戏操作帧
 func (room *Room) runGameTick() {
 	if !room.GameStage.EqualTo(constants.STAGE_InGame) {
@@ -360,6 +489,7 @@ func (room *Room) runGameTick() {
 	room.advanceOneFrame()
 	room.pruneFrameHistory()
 	room.syncAllClients()
+	room.tickEndGameArbitration()
 }
 
 func (room *Room) HasAllPlayerSync() bool {

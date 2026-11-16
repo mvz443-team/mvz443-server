@@ -46,6 +46,14 @@ type Room struct {
 	StageID   uint32
 	Seed      int32
 
+	// 胜负仲裁：收集双方上报结果，由服务端写入权威结束帧
+	EndGameVotes       map[int]uint32
+	EndGameFirstFrame  uint32
+	EndGameDeadline    time.Time
+	pendingEndFrame    uint32
+	EndGameGraceActive bool
+	EndGameFrameID     uint32
+
 	// manager
 	destroyOnce    sync.Once
 	LastActiveTime time.Time  // 上次活动时间
