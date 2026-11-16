@@ -4,6 +4,7 @@ import (
 	"log"
 	messages "mvzserver/messages/pb"
 	"sync"
+	"sync/atomic"
 
 	"github.com/gofiber/websocket/v2"
 )
@@ -52,6 +53,8 @@ type Player struct {
 	// 游戏数据
 	LastEnergySum  int32 // 上一次用户的Energy
 	LastStarShards int32 // 上一次用户的StarShards
+	// 已经主动推送给该玩家的最大帧：普通 tick 只推新帧，避免极短逻辑帧下重复补发风暴。
+	LastSyncedFrameID atomic.Uint32
 	// 开局确定性配置，由 ready 请求上报，AllReady 时规范化广播给所有人
 	Loadout *messages.LoadoutSnapshot
 	// 连接代数：重连后自增，旧的读循环退出时不得注销新连接
@@ -74,6 +77,7 @@ func (p *Player) ResetData() {
 	p.LastEnergySum = 0
 	p.LastStarShards = 0
 	p.Loadout = nil
+	p.LastSyncedFrameID.Store(0)
 	if p.Ctx != nil {
 		p.Ctx.LatestFrameID.Store(0)    // 重置最新帧ID
 		p.Ctx.LatestAckFrameID.Store(0) // 重置最新确认帧ID

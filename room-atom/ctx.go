@@ -105,7 +105,8 @@ func (m *RoomCtx) StartGameTicker() {
 	if m.GameTicker != nil {
 		m.GameTicker.Stop() // 停止之前的 ticker
 	}
-	m.GameTicker = time.NewTicker(constants.FrameIntervalMs * time.Millisecond)
+	m.GameTicker = time.NewTicker(time.Duration(constants.FrameIntervalMs) * time.Millisecond)
+	log.Printf("⏱️ 逻辑帧间隔=%dms，命令窗口=[+%d,+%d]帧", constants.FrameIntervalMs, constants.CommandLeadFrames, constants.MaxDelayFrames)
 }
 
 // --------

@@ -523,7 +523,7 @@ func (room *Room) HandleRequestBlank(player *Player, req *messages.RequestBlank)
 		player.Ctx.UpdatePlayerFrame(req.FrameId, req.AckFrameId)
 	}
 	room.pruneFrameHistory()
-	room.syncAllClients()
+	room.syncAllClients(true)
 	return true
 }
 
@@ -569,7 +569,7 @@ func (room *Room) HandleRequestCardPlant(player *Player, req *messages.RequestCa
 	operation := room.Logic.PlantCard(player, req)
 	room.recordOperationSubmission(req.Base.ProcessFrameId, operation)
 	room.pruneFrameHistory()
-	room.syncAllClients()
+	room.syncAllClients(true)
 }
 
 func (room *Room) HandleRequestRemovePlant(player *Player, req *messages.RequestRemovePlant) {
@@ -601,7 +601,7 @@ func (room *Room) HandleRequestRemovePlant(player *Player, req *messages.Request
 	operation := room.Logic.RemoveCard(player, req)
 	room.recordOperationSubmission(req.Base.ProcessFrameId, operation)
 	room.pruneFrameHistory()
-	room.syncAllClients()
+	room.syncAllClients(true)
 }
 
 func (room *Room) HandleRequestStarShards(player *Player, req *messages.RequestStarShards) {
@@ -646,7 +646,7 @@ func (room *Room) HandleRequestStarShards(player *Player, req *messages.RequestS
 	operation := room.Logic.UseStarShards(player, req)
 	room.recordOperationSubmission(req.Base.ProcessFrameId, operation)
 	room.pruneFrameHistory()
-	room.syncAllClients()
+	room.syncAllClients(true)
 }
 
 func (room *Room) HandleRequestEndGame(player *Player, req *messages.RequestEndGame) {

@@ -238,7 +238,10 @@ func (room *Room) earliestHistoryFrameID() uint32 {
 	return minFrameID
 }
 
-func (room *Room) syncClientFrames(player *Player) {
+// syncClientFrames 推送权威帧。普通 tick 只推该玩家尚未推送过的新帧；
+// forceResend=true（客户端请求触发）时从 ACK+1 重新补发，避免极短逻辑帧下
+// 每 tick 重复补发同一批帧造成消息风暴、客户端 ACK 反而停滞。
+func (room *Room) syncClientFrames(player *Player, forceResend bool) {
 	if player == nil || player.Ctx == nil || !player.Ctx.IsConnected() {
 		return
 	}
@@ -248,7 +251,14 @@ func (room *Room) syncClientFrames(player *Player) {
 		return
 	}
 
-	fromFrameID := player.Ctx.LatestAckFrameID.Load() + 1
+	ackFrameID := player.Ctx.LatestAckFrameID.Load()
+	if forceResend {
+		player.LastSyncedFrameID.Store(ackFrameID)
+	}
+	fromFrameID := ackFrameID + 1
+	if fromFrameID <= player.LastSyncedFrameID.Load() {
+		fromFrameID = player.LastSyncedFrameID.Load() + 1
+	}
 	earliestFrameID := room.earliestHistoryFrameID()
 	if fromFrameID < earliestFrameID {
 		// 缺口无法用增量帧补齐：明确通知客户端重新加入，避免永久停在“等待网络帧”。
@@ -273,6 +283,9 @@ func (room *Room) syncClientFrames(player *Player) {
 			continue
 		}
 		room.RoomCtx.SendMessageToUserByPlayer(response, player)
+	}
+	if toFrameID > player.LastSyncedFrameID.Load() {
+		player.LastSyncedFrameID.Store(toFrameID)
 	}
 }
 
@@ -300,9 +313,9 @@ func (room *Room) notifyResyncGap(player *Player, missingFrom uint32, earliest u
 	room.RoomCtx.SendMessageToUserByPlayer(resp, player)
 }
 
-func (room *Room) syncAllClients() {
+func (room *Room) syncAllClients(forceResend bool) {
 	room.RoomCtx.Players.Range(func(_ int, player *Player) bool {
-		room.syncClientFrames(player)
+		room.syncClientFrames(player, forceResend)
 		return true
 	})
 }
@@ -536,7 +549,7 @@ func (room *Room) scheduleAuthoritativeEnd() {
 	room.recordOperationSubmission(endFrame, event)
 	room.pendingEndFrame = endFrame
 	room.EndGameFrameID = endFrame
-	log.Printf("🏁 权威结束事件排入帧 %d，结果=%d", endFrame, result)
+	log.Printf("🏁 权威结束事件排入帧 %d，结果=%d，房间=%d", endFrame, result, room.ID)
 }
 
 // tickEndGameArbitration 在每次 tick 中推进投票超时与结束帧落地。
@@ -564,7 +577,16 @@ func (room *Room) enterPostGameAfterEndFrame() {
 	}
 	// 不立即 resetInGameState：保留历史帧，供落后客户端补齐到结束帧后再自行结束。
 	room.EndGameGraceActive = true
-	log.Printf("🟢 房间进入 PostGame，结束帧=%d，保留历史帧供补发", room.EndGameFrameID)
+	result, _ := room.decideEndGameResult()
+	room.RoomCtx.BroadcastMessage(&messages.RoomResponse{
+		Payload: &messages.RoomResponse_GameEnd{
+			GameEnd: &messages.ResponseGameEnd{
+				GameResult: result,
+				EndFrameId: room.EndGameFrameID,
+			},
+		},
+	}, nil)
+	log.Printf("🟢 房间 %d 进入 PostGame，结束帧=%d，保留历史帧供补发", room.ID, room.EndGameFrameID)
 }
 
 // 定时器触发的广播转发游戏操作帧
@@ -576,7 +598,7 @@ func (room *Room) runGameTick() {
 	room.LastActiveTime = time.Now() // 更新最后活动时间
 	room.advanceOneFrame()
 	room.pruneFrameHistory()
-	room.syncAllClients()
+	room.syncAllClients(false)
 	room.tickEndGameArbitration()
 }
 
