@@ -89,6 +89,7 @@ func (room *Room) resetInGameState() {
 	room.EndGameFrameID = 0
 	room.FrameHashes = make(map[uint32]map[int]uint32)
 	room.DesyncDetected = false
+	room.ResyncNotified = make(map[int]struct{})
 	for len(room.ingameOperations) > 0 {
 		<-room.ingameOperations
 	}
@@ -250,6 +251,11 @@ func (room *Room) syncClientFrames(player *Player) {
 	fromFrameID := player.Ctx.LatestAckFrameID.Load() + 1
 	earliestFrameID := room.earliestHistoryFrameID()
 	if fromFrameID < earliestFrameID {
+		// 缺口无法用增量帧补齐：明确通知客户端重新加入，避免永久停在“等待网络帧”。
+		if fromFrameID+1 < earliestFrameID {
+			room.notifyResyncGap(player, fromFrameID, earliestFrameID)
+			return
+		}
 		fromFrameID = earliestFrameID
 	}
 	if fromFrameID > serverFrameID {
@@ -268,6 +274,30 @@ func (room *Room) syncClientFrames(player *Player) {
 		}
 		room.RoomCtx.SendMessageToUserByPlayer(response, player)
 	}
+}
+
+// notifyResyncGap 通知落后过深的客户端主动重连：
+// 缺失的历史帧已被裁剪，继续等待只会永久卡在“等待网络帧”。
+func (room *Room) notifyResyncGap(player *Player, missingFrom uint32, earliest uint32) {
+	if player == nil || player.Ctx == nil {
+		return
+	}
+	if room.ResyncNotified == nil {
+		room.ResyncNotified = make(map[int]struct{})
+	}
+	if _, notified := room.ResyncNotified[player.Ctx.Id]; notified {
+		return
+	}
+	room.ResyncNotified[player.Ctx.Id] = struct{}{}
+	log.Printf("⚠️ 玩家 %d 帧缺口过大（需要 %d，最早 %d），通知重连", player.Ctx.Id, missingFrom, earliest)
+	resp := &messages.RoomResponse{
+		Payload: &messages.RoomResponse_RoomClosed{
+			RoomClosed: &messages.ResponseRoomClosed{
+				Message: "本地进度落后过多，缺失帧已超出历史窗口，请重新加入房间",
+			},
+		},
+	}
+	room.RoomCtx.SendMessageToUserByPlayer(resp, player)
 }
 
 func (room *Room) syncAllClients() {

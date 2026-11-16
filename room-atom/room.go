@@ -57,6 +57,8 @@ type Room struct {
 	// 分叉检测：frameID -> playerID -> state hash
 	FrameHashes    map[uint32]map[int]uint32
 	DesyncDetected bool
+	// 已通知重同步（帧缺口）的玩家，避免重复下发
+	ResyncNotified map[int]struct{}
 
 	// manager
 	destroyOnce    sync.Once
