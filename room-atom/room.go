@@ -62,6 +62,10 @@ type Room struct {
 	// 已通知重同步（帧缺口）的玩家，避免重复下发
 	ResyncNotified map[int]struct{}
 
+	// 双端确认的低频权威检查点；重连后从该帧之后回放历史操作。
+	Checkpoints          map[uint32]*stateCheckpoint
+	LastCheckpointFrame uint32
+
 	// manager
 	destroyOnce    sync.Once
 	LastActiveTime time.Time  // 上次活动时间
@@ -104,6 +108,7 @@ func NewRoom(id int, stopChan chan int) *Room {
 		ingameOperations: gameOperationChan,
 		scheduledFrames:  make(map[uint32]*FrameSubmission),
 		frameHistory:     make(map[uint32]*messages.InGameResponse),
+		Checkpoints:      make(map[uint32]*stateCheckpoint),
 	}
 }
 

@@ -90,6 +90,8 @@ func (room *Room) resetInGameState() {
 	room.FrameHashes = make(map[uint32]map[int]uint32)
 	room.DesyncDetected = false
 	room.ResyncNotified = make(map[int]struct{})
+	room.Checkpoints = make(map[uint32]*stateCheckpoint)
+	room.LastCheckpointFrame = 0
 	for len(room.ingameOperations) > 0 {
 		<-room.ingameOperations
 	}
@@ -402,6 +404,7 @@ func (room *Room) acceptInGameBase(player *Player, req *messages.RequestBlank) b
 	if req.HashFrameId != 0 && req.StateHash != 0 {
 		room.recordStateHash(player, req.HashFrameId, req.StateHash)
 	}
+	room.recordCheckpoint(player, req)
 	return true
 }
 

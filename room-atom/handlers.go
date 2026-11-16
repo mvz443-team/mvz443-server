@@ -232,6 +232,7 @@ func (room *Room) handleReconnect(request *ReconnectRequest) {
 	}
 
 	log.Printf("🟢 玩家 %d 重连成功，从帧 %d 继续", request.PlayerID, newCtx.LatestAckFrameID.Load())
+	room.sendReplayFromCheckpoint(target)
 	reply(target)
 }
 
@@ -523,6 +524,7 @@ func (room *Room) HandleRequestBlank(player *Player, req *messages.RequestBlank)
 		player.Ctx.UpdatePlayerFrame(req.FrameId, req.AckFrameId)
 	}
 	room.pruneFrameHistory()
+	room.sendReplayFromCheckpoint(player)
 	room.syncAllClients(true)
 	return true
 }

@@ -29,8 +29,7 @@ go.work.sum
 # local certificates
 certs/
 
-# gen
-messages/pb/
+# Generated Go protobuf contracts are committed so the server builds from a fresh checkout.
 proto-repo-temp/
 contracts/
 
