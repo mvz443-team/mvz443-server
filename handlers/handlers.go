@@ -24,17 +24,28 @@ func NewServerHandler(roomMnager *roommanager.RoomManager) *ServerHandler {
 	return &ServerHandler{RoomMnager: roomMnager}
 }
 
-// 利用 ServerHandler
-func (sh *ServerHandler) HandleListRoom(c *fiber.Ctx) error {
-	// 获取房间列表
-	rooms := sh.RoomMnager.GetRooms()
-
-	// 如果 rooms 是空的，将其设置为空数组
-	if len(rooms) == 0 {
-		rooms = []types.RoomsInfo{} // 将其设置为空数组
+// 解析可选的整数查询参数；缺省或非法时返回 fallback
+func parseIntOr(raw string, fallback int) int {
+	if raw == "" {
+		return fallback
 	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	return value
+}
 
-	// 返回房间列表
+// HandleListRoom 房间列表。
+// 支持 ?chapter_id=&stage_id= 按关卡筛选；0 人房间不下发。
+func (sh *ServerHandler) HandleListRoom(c *fiber.Ctx) error {
+	chapterID := parseIntOr(c.Query("chapter_id"), -1)
+	stageID := parseIntOr(c.Query("stage_id"), -1)
+
+	rooms := sh.RoomMnager.GetRooms(chapterID, stageID)
+	if len(rooms) == 0 {
+		rooms = []types.RoomsInfo{}
+	}
 	return c.JSON(rooms)
 }
 
@@ -56,7 +67,8 @@ func (sh *ServerHandler) HandleWS(c *websocket.Conn) {
 		}
 	}
 
-	_key := c.Query("key") // 密钥
+	_key := utils.NormalizeRoomKey(c.Query("key")) // 密钥
+	userName := c.Query("user")
 
 	// 断线重连：InGame 阶段保留席位，按房间号 + 玩家 id + 密钥重新绑定连接。
 	if c.Query("reconnect") == "1" {
@@ -95,10 +107,8 @@ func (sh *ServerHandler) HandleWS(c *websocket.Conn) {
 		return
 	}
 
-	// TODO: 多一个参数, create / join，
-	// 如果是create,则创建新房间,如果是join,则如果无指定id，返回失败信息
-
-	// 如果没有指定房间ID,则创建新房间
+	// 没有指定房间号：创建新房间。
+	// create=1 只是显式声明，便于排查问题；老客户端不带该参数也能建房。
 	if roomId == -1 {
 		roomId = sh.RoomMnager.GetNewRoomId()
 	}
@@ -107,7 +117,13 @@ func (sh *ServerHandler) HandleWS(c *websocket.Conn) {
 	room := sh.RoomMnager.GetRoom(roomId)
 	if room == nil {
 		// 房间不存在,创建新房间
-		room = sh.RoomMnager.AddRoom(roomId, _key)
+		roomName := utils.NormalizeRoomName(c.Query("name"))
+		if roomName == "" {
+			roomName = "房间" + strconv.Itoa(roomId)
+		}
+		chapterID := uint32(parseIntOr(c.Query("chapter_id"), 0))
+		stageID := uint32(parseIntOr(c.Query("stage_id"), 0))
+		room = sh.RoomMnager.AddRoom(roomId, _key, roomName, chapterID, stageID)
 		// 房间开始运行
 		go room.Run()
 	} else {
@@ -133,8 +149,8 @@ func (sh *ServerHandler) HandleWS(c *websocket.Conn) {
 			return
 		}
 
-		// 房间是否进入准备阶段
-		if room.GameStage.IsLaterThanOrEqual(constants.STAGE_Preparing) {
+		// 加载与游戏中不允许再加入；等待房间与选卡阶段可以进
+		if room.GameStage.IsLaterThanOrEqual(constants.STAGE_Loading) {
 			payload.Message = "房间已开始"
 			utils.WriteLobbyResponse(c, &resp)
 			c.Close()
@@ -143,5 +159,5 @@ func (sh *ServerHandler) HandleWS(c *websocket.Conn) {
 	}
 
 	// 服务用户连接
-	room.HandleClientJoin(c)
+	room.HandleClientJoin(c, userName)
 }

@@ -3,6 +3,7 @@ package clients
 import (
 	"fmt"
 	"mvzserver/constants"
+	"net"
 	"sync"
 
 	"sync/atomic"
@@ -17,6 +18,9 @@ import (
 type ClientCtx struct {
 	mu   sync.RWMutex    // 保护连接的读写锁
 	Conn *websocket.Conn // 长连接
+	// 底层 TCP 连接：读循环会长时间持读锁阻塞在 ReadMessage 上，
+	// 踢人等需要立刻断开连接的场景只能绕过读写锁直接关闭它。
+	rawConn net.Conn
 
 	// 信息
 	Id int // 用户id
@@ -34,11 +38,33 @@ type ClientCtx struct {
 	State             constants.PlayerState // 当前状态（在线/断线）
 }
 
+// unsafeConner 由 fasthttp 的 hijackConn 实现，可取出真正持有 socket 的连接。
+type unsafeConner interface {
+	UnsafeConn() net.Conn
+}
+
 func NewClientCtx(conn *websocket.Conn, id int) *ClientCtx {
+	var rawConn net.Conn
+	if conn != nil {
+		rawConn = conn.UnderlyingConn()
+		// hijackConn.Close 在 KeepHijackedConns=false 时是空实现，必须取到内部真实连接
+		if unwrapper, ok := rawConn.(unsafeConner); ok {
+			rawConn = unwrapper.UnsafeConn()
+		}
+	}
 	return &ClientCtx{
-		Conn: conn,
-		Id:   id,
+		Conn:    conn,
+		rawConn: rawConn,
+		Id:      id,
 		// atomic.Uint32 默认零值即可，无需额外初始化
+	}
+}
+
+// ForceClose 直接关闭底层连接，不等待读循环释放读锁。
+// 用于房主踢人：目标玩家的读循环仍阻塞在 ReadMessage 上，常规 Close 会阻塞房间主循环。
+func (c *ClientCtx) ForceClose() {
+	if c.rawConn != nil {
+		_ = c.rawConn.Close()
 	}
 }
 

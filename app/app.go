@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -71,6 +72,10 @@ func CreateFiberApp(cfg AppConfig, serverHandler *handlers.ServerHandler) (fapp 
 	}
 	fapp.Get("/ws", websocket.New(serverHandler.HandleWS, wsConfig))
 	fapp.Get("/list", serverHandler.HandleListRoom)
+	// 客户端联机设置里的连通性与延时探测
+	fapp.Get("/ping", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{"pong": time.Now().UnixMilli()})
+	})
 
 	listenAddr := net.JoinHostPort(cfg.Host, cfg.Port)
 	certPath, keyPath := resolveCertPair(cfg)

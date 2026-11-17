@@ -1,7 +1,6 @@
 package roomatom
 
 import (
-	"encoding/json"
 	"log"
 	"mvzserver/clients"
 	"mvzserver/constants"
@@ -23,7 +22,8 @@ type PlayerMessage = clients.PlayerMessage
 const maxOperationCost int32 = 100000
 
 // WS入口
-func (room *Room) HandleClientJoin(c *websocket.Conn) {
+// userName 来自连接参数，仅用于等待房间展示
+func (room *Room) HandleClientJoin(c *websocket.Conn, userName string) {
 	log.Printf("🟢 Client connecting to room %d", room.ID)
 
 	// 检查连接是否有效
@@ -67,6 +67,11 @@ func (room *Room) HandleClientJoin(c *websocket.Conn) {
 
 	// 创建一个新的玩家实例
 	p := clients.NewPlayer(ctx, room.incomingMessages)
+	p.Name = utils.NormalizeUserName(userName)
+	if p.Name == "" {
+		p.Name = "player"
+	}
+	p.JoinKey = room.key
 
 	// 最后检查连接
 	if !p.Ctx.IsConnected() {
@@ -90,85 +95,35 @@ func (room *Room) HandleClientJoin(c *websocket.Conn) {
 // ---------------------------
 
 func (room *Room) handleRegister(player *clients.Player) {
-	// ... 注册客户端逻辑 ...
-	log.Printf("🔵 Processing registration for player %d", player.GetID())
+	log.Printf("🔵 Processing registration for player %d (%s)", player.GetID(), player.Name)
 
 	// 更新房间活跃时间
 	room.UpdateActiveTime()
 
-	// 在 Lobby 状态下才允许新玩家加入
-	if room.GameStage.EqualTo(constants.STAGE_InLobby) {
-		log.Printf("🔵 Room is in lobby state, adding player %d", player.GetID())
-		// 向 context 中注册用户
-		room.RoomCtx.AddUser(player)
-
-		// **移除 goroutine**：现在 StartServeClient 在 HandleClientJoin 中直接调用
-		// go func() {
-		//     log.Printf("🟢 Starting client service for player %d", player.GetID())
-		//     room.StartServeClient(player)
-		// }()
-
-		// 制作当前peers信息json
-		// peers = [{"addr" : string, "id": int}, ...]
-		type PeerInfo struct {
-			Addr string `json:"addr"`
-			Id   int    `json:"id"`
+	// 等待房间与选卡阶段都允许加入；加载与游戏阶段拒绝
+	if room.GameStage.IsLaterThanOrEqual(constants.STAGE_Loading) {
+		log.Printf("🔴 Registration rejected for player %d - room stage %d", player.GetID(), room.GameStage.Load())
+		room.RoomCtx.SendMessageToUserByPlayer(&messages.RoomResponse{
+			Payload: &messages.RoomResponse_RoomClosed{
+				RoomClosed: &messages.ResponseRoomClosed{Message: "房间已开始游戏，无法加入"},
+			},
+		}, player)
+		if player.Ctx != nil {
+			player.Ctx.Close()
 		}
-		var peers []PeerInfo
-		room.RoomCtx.Players.Range(func(uid int, player *clients.Player) bool {
-			// 检查 player 和 player.Ctx 是否为 nil，并安全地检查连接
-			if player == nil || player.Ctx == nil || !player.Ctx.IsConnected() {
-				return true // 跳过无效的玩家
-			}
-			addr := "111.111.111.111"
-			peers = append(peers, PeerInfo{
-				Addr: addr,
-				Id:   player.Ctx.Id,
-			})
-			return true
-		})
-		jsonPeers, _ := json.Marshal(peers)
-		jsonPeersStr := string(jsonPeers)
-		log.Printf("🔵 Created peers JSON for broadcast: %s", jsonPeersStr)
-
-		// 进行一次广播
-		log.Printf("🔵 Starting roomInfo broadcast to %d players", len(peers))
-		room.RoomCtx.Players.Range(func(uid int, player *clients.Player) bool {
-			// 检查 player 和 player.Ctx 是否为 nil
-			if player == nil || player.Ctx == nil {
-				return true // 跳过无效的玩家
-			}
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("处理玩家注册时捕获到 Panic: %v\n", r)
-					log.Printf("堆栈信息:\n%s", string(debug.Stack()))
-				}
-			}()
-			payload := messages.ResponseRoomInfo{
-				Peers:  jsonPeersStr,
-				RoomId: uint32(room.ID),
-				LordId: uint32(room.RoomCtx.OwnerUserID),
-				MyId:   uint32(player.Ctx.Id),
-			}
-			log.Printf("🔵 Sending roomInfo to player %d", player.Ctx.Id)
-			room.RoomCtx.SendMessageToUserByPlayer(&messages.RoomResponse{
-				Payload: &messages.RoomResponse_RoomInfo{
-					RoomInfo: &payload,
-				},
-			}, player)
-			log.Printf("🔵 roomInfo sent to player %d", player.Ctx.Id)
-			return true
-		})
-		log.Printf("🔵 roomInfo broadcast completed for player registration %d", player.GetID())
-	} else {
-		// 拒绝加入
-		log.Printf("🔴 Registration rejected for player %d - room not in lobby state", player.GetID())
+		return
 	}
+
+	room.RoomCtx.AddUser(player)
+	room.broadcastRoomInfo()
+	// 已经在选卡的房间：新加入的玩家直接进入选卡界面
+	if room.GameStage.EqualTo(constants.STAGE_Preparing) {
+		room.sendChooseMapTo(player)
+	}
+	room.broadcastReadyCount()
 }
 
 func (room *Room) handleUnregister(player *clients.Player) {
-	// ... 注销客户端逻辑 ...
-	// 检查 player 和 player.Ctx 是否为 nil
 	if player == nil || player.Ctx == nil {
 		return
 	}
@@ -183,13 +138,20 @@ func (room *Room) handleUnregister(player *clients.Player) {
 		return
 	}
 
-	room.RoomCtx.DelUser(player.Ctx.Id) // 向 context 中注销用户
-	// 关闭连接
+	leavingID := player.Ctx.Id
+	room.RoomCtx.DelUser(leavingID) // 向 context 中注销用户
 	if player.Ctx.IsConnected() {
 		player.Ctx.Close()
 	}
-	// 删除实例
-	// 广播人数变化，如果状态是 Preparing/InGame，可能需要特殊处理
+	room.transferOwnerIfNeeded(leavingID)
+
+	// 选卡阶段有人离开：退回等待房间，避免剩下的人卡在选卡界面
+	if room.GameStage.EqualTo(constants.STAGE_Preparing) {
+		room.returnToLobby()
+		return
+	}
+	room.broadcastRoomInfo()
+	room.broadcastReadyCount()
 }
 
 // handleReconnect 在房间主循环内把新连接绑定到保留的玩家席位。
@@ -200,7 +162,7 @@ func (room *Room) handleReconnect(request *ReconnectRequest) {
 		}
 	}
 
-	if request == nil || !room.GameStage.EqualTo(constants.STAGE_InGame) || room.key != request.Key {
+	if request == nil || !room.GameStage.EqualTo(constants.STAGE_InGame) {
 		reply(nil)
 		return
 	}
@@ -213,7 +175,8 @@ func (room *Room) handleReconnect(request *ReconnectRequest) {
 		}
 		return true
 	})
-	if target == nil {
+	// 房主改过密码后，老成员手里还是加入时的密钥，用 JoinKey 放行
+	if target == nil || (target.JoinKey != request.Key && room.key != request.Key) {
 		reply(nil)
 		return
 	}
@@ -313,6 +276,11 @@ func (room *Room) handlePlayerMessage(msg *PlayerMessage) {
 		room.HandleRequestStarShards(msg.Player, payload.StarShards)
 	case *messages.Request_EndGame:
 		room.HandleRequestEndGame(msg.Player, payload.EndGame)
+	// 等待房间内的房间管理
+	case *messages.Request_UpdateRoom:
+		room.HandleRequestUpdateRoom(msg.Player, payload.UpdateRoom)
+	case *messages.Request_KickPlayer:
+		room.HandleRequestKickPlayer(msg.Player, payload.KickPlayer)
 
 	default:
 		// 未知请求类型
@@ -323,10 +291,11 @@ func (room *Room) HandleRequestReady(player *Player, req *messages.RequestReady)
 	log.Printf("🔵 HandleRequestReady: Player %d, isReady: %v, current stage: %d",
 		player.GetID(), req.IsReady, room.GameStage.Load())
 
-	// 只能在 STAGE_Preparing 阶段处理
-	if !room.GameStage.EqualTo(constants.STAGE_Preparing) {
-		log.Printf("🔴 HandleRequestReady: Rejected - room not in Preparing stage, current: %d",
-			room.GameStage.Load())
+	// InLobby：等待房间准备（全员准备后进入选卡）
+	// Preparing：选卡确认（全员确认后进入加载）
+	stage := room.GameStage.Load()
+	if stage != constants.STAGE_InLobby && stage != constants.STAGE_Preparing {
+		log.Printf("🔴 HandleRequestReady: Rejected - room stage %d", stage)
 		return
 	}
 
@@ -335,6 +304,18 @@ func (room *Room) HandleRequestReady(player *Player, req *messages.RequestReady)
 		player.Loadout = req.Loadout
 	}
 	log.Printf("🔵 HandleRequestReady: Set player %d isReady to %v", player.GetID(), req.IsReady)
+
+	if stage == constants.STAGE_InLobby {
+		room.broadcastRoomInfo()
+		if room.HasAllPlayerReady() {
+			room.startPreparing()
+			return
+		}
+		room.broadcastReadyCount()
+		return
+	}
+
+	room.broadcastRoomInfo()
 
 	// 检查所有玩家状态
 	totalPlayers := room.GetPlayerCount()
@@ -414,32 +395,23 @@ func (room *Room) HandleRequestChooseMap(player *Player, req *messages.RequestCh
 	// 更新房间活跃时间 - 选择地图是重要的游戏进展
 	room.UpdateActiveTime()
 
-	// 推进 prepareing 阶段
+	// 房间在创建时已绑定关卡，客户端传来的关卡只在未绑定时生效
+	if room.ChapterID == 0 && room.StageID == 0 {
+		room.ChapterID = req.ChapterId
+		room.StageID = req.StageId
+	}
 	room.GameStage.Store(constants.STAGE_Preparing)
-	room.ChapterID = req.ChapterId
-	room.StageID = req.StageId
-	// 广播
-	payload := messages.ResponseChooseMap{
-		ChapterId: req.ChapterId,
-		StageId:   req.StageId,
-	}
-	resp := &messages.RoomResponse{
-		Payload: &messages.RoomResponse_ChooseMap{
-			ChooseMap: &payload,
-		},
-	}
-	room.RoomCtx.BroadcastMessage(resp, nil)
+	room.resetReadyFlags()
+	room.broadcastRoomInfo()
+	room.broadcastChooseMap()
+	room.broadcastReadyCount()
 }
 
 func (room *Room) HandleRequestLeaveChooseMap(player *Player, req *messages.RequestLeaveChooseMap) {
-	// 检查 player 和 player.Ctx 是否为 nil
 	if player == nil || player.Ctx == nil {
 		return
 	}
-	// 只有房主能这样做
-	if room.RoomCtx.OwnerUserID != player.Ctx.Id {
-		return
-	}
+	// 双人合作房间：任何成员都可以从选卡退回等待房间
 	// 只能在 STAGE_Preparing 阶段处理
 	if !room.GameStage.EqualTo(constants.STAGE_Preparing) {
 		return
@@ -448,17 +420,68 @@ func (room *Room) HandleRequestLeaveChooseMap(player *Player, req *messages.Requ
 	// 更新房间活跃时间 - 离开选卡也是游戏操作
 	room.UpdateActiveTime()
 
-	room.GameStage.Store(constants.STAGE_InLobby)
-	room.ChapterID = 0
-	room.StageID = 0
-	// 广播，退出选卡
-	payload := messages.ResponseQuitChooseMap{}
-	resp := &messages.RoomResponse{
-		Payload: &messages.RoomResponse_QuitChooseMap{
-			QuitChooseMap: &payload,
-		},
+	// 绑定关卡跨局保留，回到等待房间即可重新选卡
+	room.returnToLobby()
+}
+
+// HandleRequestUpdateRoom 房主在等待房间内修改房间名与密码。
+func (room *Room) HandleRequestUpdateRoom(player *Player, req *messages.RequestUpdateRoom) {
+	if player == nil || player.Ctx == nil || req == nil {
+		return
 	}
-	room.RoomCtx.BroadcastMessage(resp, nil)
+	if room.RoomCtx.OwnerUserID != player.Ctx.Id {
+		return
+	}
+	if room.GameStage.IsLaterThanOrEqual(constants.STAGE_Loading) {
+		return
+	}
+
+	name := utils.NormalizeRoomName(req.Name)
+	if name == "" {
+		name = room.Name
+	}
+	room.SetName(name)
+	room.SetKey(utils.NormalizeRoomKey(req.Key))
+	room.UpdateActiveTime()
+	log.Printf("🔵 Room %d updated: name=%s needKey=%v", room.ID, room.Name, room.HasKey())
+	room.broadcastRoomInfo()
+}
+
+// HandleRequestKickPlayer 房主把指定玩家移出房间。
+func (room *Room) HandleRequestKickPlayer(player *Player, req *messages.RequestKickPlayer) {
+	if player == nil || player.Ctx == nil || req == nil {
+		return
+	}
+	if room.RoomCtx.OwnerUserID != player.Ctx.Id {
+		return
+	}
+	targetID := int(req.PlayerId)
+	if targetID == player.Ctx.Id {
+		return
+	}
+	target, ok := room.RoomCtx.Players.Load(targetID)
+	if !ok || target == nil {
+		return
+	}
+
+	log.Printf("🔵 Room %d kicking player %d", room.ID, targetID)
+	room.RoomCtx.SendMessageToUserByPlayer(&messages.RoomResponse{
+		Payload: &messages.RoomResponse_RoomClosed{
+			RoomClosed: &messages.ResponseRoomClosed{Message: "你已被房主移出房间"},
+		},
+	}, target)
+	room.RoomCtx.DelUser(targetID)
+	if target.Ctx != nil {
+		// 读循环阻塞在 ReadMessage 上持有读锁，Close 会阻塞房间主循环，这里直接关闭底层连接
+		target.Ctx.ForceClose()
+	}
+
+	if room.GameStage.EqualTo(constants.STAGE_Preparing) {
+		room.returnToLobby()
+		return
+	}
+	room.broadcastRoomInfo()
+	room.broadcastReadyCount()
 }
 
 func (room *Room) HandleRequestLoaded(player *Player, req *messages.RequestLoaded) {

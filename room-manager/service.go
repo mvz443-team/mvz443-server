@@ -5,6 +5,7 @@ import (
 	"mvzserver/constants"
 	roomatom "mvzserver/room-atom"
 	"mvzserver/types"
+	"sort"
 	"time"
 )
 
@@ -33,18 +34,34 @@ func (rm *RoomManager) GetRoom(id int) *Room {
 	return nil
 }
 
-func (rm *RoomManager) GetRooms() []types.RoomsInfo {
-	// 获得所有的房间,用户数量,是否开始游戏,和是否需要密码
+// GetRooms 返回房间列表。
+// chapterID / stageID 传负数表示不按关卡筛选；0 人房间一律不返回。
+func (rm *RoomManager) GetRooms(chapterID, stageID int) []types.RoomsInfo {
 	var rooms []types.RoomsInfo
 	rm.rooms.Range(func(id int, room *Room) bool {
+		playerCount := int(room.GetPlayerCount())
+		if playerCount <= 0 {
+			return true
+		}
+		roomChapter, roomStage := room.GetBoundStage()
+		if chapterID >= 0 && int(roomChapter) != chapterID {
+			return true
+		}
+		if stageID >= 0 && int(roomStage) != stageID {
+			return true
+		}
 		rooms = append(rooms, types.RoomsInfo{
 			RoomID:      id,
+			RoomName:    room.GetName(),
 			NeedKey:     room.HasKey(),
-			PlayerCount: int(room.GetPlayerCount()),
+			PlayerCount: playerCount,
 			GameState:   room.GameStage.Load(),
+			ChapterID:   roomChapter,
+			StageID:     roomStage,
 		})
 		return true
 	})
+	sort.Slice(rooms, func(i, j int) bool { return rooms[i].RoomID < rooms[j].RoomID })
 	return rooms
 }
 
@@ -60,9 +77,12 @@ func (rm *RoomManager) GetNewRoomId() int {
 }
 
 // AddRoom 创建一个新的房间并添加到管理器中
-func (rm *RoomManager) AddRoom(id int, key string) *Room {
+// 房间名、密码与绑定关卡在创建时确定
+func (rm *RoomManager) AddRoom(id int, key, name string, chapterID, stageID uint32) *Room {
 	room := roomatom.NewRoom(id, rm.destroyChan)
 	room.SetKey(key)
+	room.SetName(name)
+	room.SetBoundStage(chapterID, stageID)
 	rm.rooms.Store(id, room)
 	return room
 }

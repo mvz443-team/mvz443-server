@@ -45,6 +45,8 @@ type Request struct {
 	//	*Request_RemovePlant
 	//	*Request_StarShards
 	//	*Request_EndGame
+	//	*Request_UpdateRoom
+	//	*Request_KickPlayer
 	Payload isRequest_Payload `protobuf_oneof:"payload"`
 }
 
@@ -150,6 +152,20 @@ func (x *Request) GetEndGame() *RequestEndGame {
 	return nil
 }
 
+func (x *Request) GetUpdateRoom() *RequestUpdateRoom {
+	if x, ok := x.GetPayload().(*Request_UpdateRoom); ok {
+		return x.UpdateRoom
+	}
+	return nil
+}
+
+func (x *Request) GetKickPlayer() *RequestKickPlayer {
+	if x, ok := x.GetPayload().(*Request_KickPlayer); ok {
+		return x.KickPlayer
+	}
+	return nil
+}
+
 type isRequest_Payload interface {
 	isRequest_Payload()
 }
@@ -190,6 +206,15 @@ type Request_EndGame struct {
 	EndGame *RequestEndGame `protobuf:"bytes,7,opt,name=end_game,json=endGame,proto3,oneof"`
 }
 
+type Request_UpdateRoom struct {
+	// 等待房间（InLobby）内的房间管理请求
+	UpdateRoom *RequestUpdateRoom `protobuf:"bytes,10,opt,name=update_room,json=updateRoom,proto3,oneof"`
+}
+
+type Request_KickPlayer struct {
+	KickPlayer *RequestKickPlayer `protobuf:"bytes,11,opt,name=kick_player,json=kickPlayer,proto3,oneof"`
+}
+
 func (*Request_ChooseMap) isRequest_Payload() {}
 
 func (*Request_LeaveChooseMap) isRequest_Payload() {}
@@ -207,6 +232,10 @@ func (*Request_RemovePlant) isRequest_Payload() {}
 func (*Request_StarShards) isRequest_Payload() {}
 
 func (*Request_EndGame) isRequest_Payload() {}
+
+func (*Request_UpdateRoom) isRequest_Payload() {}
+
+func (*Request_KickPlayer) isRequest_Payload() {}
 
 // RequestChooseMap 请求选择地图
 // 房主客户端在选择地图时发送此请求
@@ -883,12 +912,118 @@ func (x *RequestEndGame) GetGameResult() uint32 {
 	return 0
 }
 
+// 房主在等待房间内修改房间名与密码；仅房主有效
+type RequestUpdateRoom struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	// 房间名，最长 6 个字符（服务端按 rune 截断）
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// 房间密码，空字符串表示公开房间；最长 8 个字符
+	Key string `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+}
+
+func (x *RequestUpdateRoom) Reset() {
+	*x = RequestUpdateRoom{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_request_proto_msgTypes[11]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *RequestUpdateRoom) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RequestUpdateRoom) ProtoMessage() {}
+
+func (x *RequestUpdateRoom) ProtoReflect() protoreflect.Message {
+	mi := &file_request_proto_msgTypes[11]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RequestUpdateRoom.ProtoReflect.Descriptor instead.
+func (*RequestUpdateRoom) Descriptor() ([]byte, []int) {
+	return file_request_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *RequestUpdateRoom) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *RequestUpdateRoom) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+// 房主将指定玩家移出房间
+type RequestKickPlayer struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	PlayerId uint32 `protobuf:"varint,1,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
+}
+
+func (x *RequestKickPlayer) Reset() {
+	*x = RequestKickPlayer{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_request_proto_msgTypes[12]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *RequestKickPlayer) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RequestKickPlayer) ProtoMessage() {}
+
+func (x *RequestKickPlayer) ProtoReflect() protoreflect.Message {
+	mi := &file_request_proto_msgTypes[12]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RequestKickPlayer.ProtoReflect.Descriptor instead.
+func (*RequestKickPlayer) Descriptor() ([]byte, []int) {
+	return file_request_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *RequestKickPlayer) GetPlayerId() uint32 {
+	if x != nil {
+		return x.PlayerId
+	}
+	return 0
+}
+
 var File_request_proto protoreflect.FileDescriptor
 
 var file_request_proto_rawDesc = []byte{
 	0x0a, 0x0d, 0x72, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x12,
 	0x08, 0x6d, 0x65, 0x73, 0x73, 0x61, 0x67, 0x65, 0x73, 0x1a, 0x0c, 0x63, 0x6f, 0x6d, 0x6d, 0x6f,
-	0x6e, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x22, 0x9f, 0x04, 0x0a, 0x07, 0x52, 0x65, 0x71, 0x75,
+	0x6e, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x22, 0x9f, 0x05, 0x0a, 0x07, 0x52, 0x65, 0x71, 0x75,
 	0x65, 0x73, 0x74, 0x12, 0x3b, 0x0a, 0x0a, 0x63, 0x68, 0x6f, 0x6f, 0x73, 0x65, 0x5f, 0x6d, 0x61,
 	0x70, 0x18, 0x06, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x1a, 0x2e, 0x6d, 0x65, 0x73, 0x73, 0x61, 0x67,
 	0x65, 0x73, 0x2e, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x43, 0x68, 0x6f, 0x6f, 0x73, 0x65,
@@ -921,7 +1056,15 @@ var file_request_proto_rawDesc = []byte{
 	0x72, 0x53, 0x68, 0x61, 0x72, 0x64, 0x73, 0x12, 0x35, 0x0a, 0x08, 0x65, 0x6e, 0x64, 0x5f, 0x67,
 	0x61, 0x6d, 0x65, 0x18, 0x07, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x18, 0x2e, 0x6d, 0x65, 0x73, 0x73,
 	0x61, 0x67, 0x65, 0x73, 0x2e, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x45, 0x6e, 0x64, 0x47,
-	0x61, 0x6d, 0x65, 0x48, 0x00, 0x52, 0x07, 0x65, 0x6e, 0x64, 0x47, 0x61, 0x6d, 0x65, 0x42, 0x09,
+	0x61, 0x6d, 0x65, 0x48, 0x00, 0x52, 0x07, 0x65, 0x6e, 0x64, 0x47, 0x61, 0x6d, 0x65, 0x12, 0x3e,
+	0x0a, 0x0b, 0x75, 0x70, 0x64, 0x61, 0x74, 0x65, 0x5f, 0x72, 0x6f, 0x6f, 0x6d, 0x18, 0x0a, 0x20,
+	0x01, 0x28, 0x0b, 0x32, 0x1b, 0x2e, 0x6d, 0x65, 0x73, 0x73, 0x61, 0x67, 0x65, 0x73, 0x2e, 0x52,
+	0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x55, 0x70, 0x64, 0x61, 0x74, 0x65, 0x52, 0x6f, 0x6f, 0x6d,
+	0x48, 0x00, 0x52, 0x0a, 0x75, 0x70, 0x64, 0x61, 0x74, 0x65, 0x52, 0x6f, 0x6f, 0x6d, 0x12, 0x3e,
+	0x0a, 0x0b, 0x6b, 0x69, 0x63, 0x6b, 0x5f, 0x70, 0x6c, 0x61, 0x79, 0x65, 0x72, 0x18, 0x0b, 0x20,
+	0x01, 0x28, 0x0b, 0x32, 0x1b, 0x2e, 0x6d, 0x65, 0x73, 0x73, 0x61, 0x67, 0x65, 0x73, 0x2e, 0x52,
+	0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x4b, 0x69, 0x63, 0x6b, 0x50, 0x6c, 0x61, 0x79, 0x65, 0x72,
+	0x48, 0x00, 0x52, 0x0a, 0x6b, 0x69, 0x63, 0x6b, 0x50, 0x6c, 0x61, 0x79, 0x65, 0x72, 0x42, 0x09,
 	0x0a, 0x07, 0x70, 0x61, 0x79, 0x6c, 0x6f, 0x61, 0x64, 0x22, 0x4c, 0x0a, 0x10, 0x52, 0x65, 0x71,
 	0x75, 0x65, 0x73, 0x74, 0x43, 0x68, 0x6f, 0x6f, 0x73, 0x65, 0x4d, 0x61, 0x70, 0x12, 0x1d, 0x0a,
 	0x0a, 0x63, 0x68, 0x61, 0x70, 0x74, 0x65, 0x72, 0x5f, 0x69, 0x64, 0x18, 0x01, 0x20, 0x01, 0x28,
@@ -996,8 +1139,15 @@ var file_request_proto_rawDesc = []byte{
 	0x64, 0x73, 0x53, 0x75, 0x6d, 0x22, 0x31, 0x0a, 0x0e, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74,
 	0x45, 0x6e, 0x64, 0x47, 0x61, 0x6d, 0x65, 0x12, 0x1f, 0x0a, 0x0b, 0x67, 0x61, 0x6d, 0x65, 0x5f,
 	0x72, 0x65, 0x73, 0x75, 0x6c, 0x74, 0x18, 0x01, 0x20, 0x01, 0x28, 0x0d, 0x52, 0x0a, 0x67, 0x61,
-	0x6d, 0x65, 0x52, 0x65, 0x73, 0x75, 0x6c, 0x74, 0x42, 0x0d, 0x5a, 0x0b, 0x2e, 0x2f, 0x3b, 0x6d,
-	0x65, 0x73, 0x73, 0x61, 0x67, 0x65, 0x73, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
+	0x6d, 0x65, 0x52, 0x65, 0x73, 0x75, 0x6c, 0x74, 0x22, 0x39, 0x0a, 0x11, 0x52, 0x65, 0x71, 0x75,
+	0x65, 0x73, 0x74, 0x55, 0x70, 0x64, 0x61, 0x74, 0x65, 0x52, 0x6f, 0x6f, 0x6d, 0x12, 0x12, 0x0a,
+	0x04, 0x6e, 0x61, 0x6d, 0x65, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x04, 0x6e, 0x61, 0x6d,
+	0x65, 0x12, 0x10, 0x0a, 0x03, 0x6b, 0x65, 0x79, 0x18, 0x02, 0x20, 0x01, 0x28, 0x09, 0x52, 0x03,
+	0x6b, 0x65, 0x79, 0x22, 0x30, 0x0a, 0x11, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x4b, 0x69,
+	0x63, 0x6b, 0x50, 0x6c, 0x61, 0x79, 0x65, 0x72, 0x12, 0x1b, 0x0a, 0x09, 0x70, 0x6c, 0x61, 0x79,
+	0x65, 0x72, 0x5f, 0x69, 0x64, 0x18, 0x01, 0x20, 0x01, 0x28, 0x0d, 0x52, 0x08, 0x70, 0x6c, 0x61,
+	0x79, 0x65, 0x72, 0x49, 0x64, 0x42, 0x0d, 0x5a, 0x0b, 0x2e, 0x2f, 0x3b, 0x6d, 0x65, 0x73, 0x73,
+	0x61, 0x67, 0x65, 0x73, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
 }
 
 var (
@@ -1012,7 +1162,7 @@ func file_request_proto_rawDescGZIP() []byte {
 	return file_request_proto_rawDescData
 }
 
-var file_request_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_request_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_request_proto_goTypes = []interface{}{
 	(*Request)(nil),               // 0: messages.Request
 	(*RequestChooseMap)(nil),      // 1: messages.RequestChooseMap
@@ -1025,7 +1175,9 @@ var file_request_proto_goTypes = []interface{}{
 	(*RequestRemovePlant)(nil),    // 8: messages.RequestRemovePlant
 	(*RequestStarShards)(nil),     // 9: messages.RequestStarShards
 	(*RequestEndGame)(nil),        // 10: messages.RequestEndGame
-	(*LoadoutSnapshot)(nil),       // 11: messages.LoadoutSnapshot
+	(*RequestUpdateRoom)(nil),     // 11: messages.RequestUpdateRoom
+	(*RequestKickPlayer)(nil),     // 12: messages.RequestKickPlayer
+	(*LoadoutSnapshot)(nil),       // 13: messages.LoadoutSnapshot
 }
 var file_request_proto_depIdxs = []int32{
 	1,  // 0: messages.Request.choose_map:type_name -> messages.RequestChooseMap
@@ -1037,16 +1189,18 @@ var file_request_proto_depIdxs = []int32{
 	8,  // 6: messages.Request.remove_plant:type_name -> messages.RequestRemovePlant
 	9,  // 7: messages.Request.star_shards:type_name -> messages.RequestStarShards
 	10, // 8: messages.Request.end_game:type_name -> messages.RequestEndGame
-	11, // 9: messages.RequestReady.loadout:type_name -> messages.LoadoutSnapshot
-	5,  // 10: messages.RequestGridOperation.base:type_name -> messages.RequestBlank
-	6,  // 11: messages.RequestCardPlant.base:type_name -> messages.RequestGridOperation
-	6,  // 12: messages.RequestRemovePlant.base:type_name -> messages.RequestGridOperation
-	6,  // 13: messages.RequestStarShards.base:type_name -> messages.RequestGridOperation
-	14, // [14:14] is the sub-list for method output_type
-	14, // [14:14] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	11, // 9: messages.Request.update_room:type_name -> messages.RequestUpdateRoom
+	12, // 10: messages.Request.kick_player:type_name -> messages.RequestKickPlayer
+	13, // 11: messages.RequestReady.loadout:type_name -> messages.LoadoutSnapshot
+	5,  // 12: messages.RequestGridOperation.base:type_name -> messages.RequestBlank
+	6,  // 13: messages.RequestCardPlant.base:type_name -> messages.RequestGridOperation
+	6,  // 14: messages.RequestRemovePlant.base:type_name -> messages.RequestGridOperation
+	6,  // 15: messages.RequestStarShards.base:type_name -> messages.RequestGridOperation
+	16, // [16:16] is the sub-list for method output_type
+	16, // [16:16] is the sub-list for method input_type
+	16, // [16:16] is the sub-list for extension type_name
+	16, // [16:16] is the sub-list for extension extendee
+	0,  // [0:16] is the sub-list for field type_name
 }
 
 func init() { file_request_proto_init() }
@@ -1188,6 +1342,30 @@ func file_request_proto_init() {
 				return nil
 			}
 		}
+		file_request_proto_msgTypes[11].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*RequestUpdateRoom); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
+		file_request_proto_msgTypes[12].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*RequestKickPlayer); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
 	}
 	file_request_proto_msgTypes[0].OneofWrappers = []interface{}{
 		(*Request_ChooseMap)(nil),
@@ -1199,6 +1377,8 @@ func file_request_proto_init() {
 		(*Request_RemovePlant)(nil),
 		(*Request_StarShards)(nil),
 		(*Request_EndGame)(nil),
+		(*Request_UpdateRoom)(nil),
+		(*Request_KickPlayer)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1206,7 +1386,7 @@ func file_request_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: file_request_proto_rawDesc,
 			NumEnums:      0,
-			NumMessages:   11,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

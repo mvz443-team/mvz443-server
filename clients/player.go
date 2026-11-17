@@ -50,6 +50,11 @@ type Player struct {
 	IsReady  bool // 是否准备好
 	IsLoaded bool // 是否加载完毕
 
+	// 玩家昵称，由客户端连接时携带；仅用于房间内展示
+	Name string
+	// 加入房间时使用的密钥；房主改密码后旧成员仍可用它重连
+	JoinKey string
+
 	// 游戏数据
 	LastEnergySum  int32 // 上一次用户的Energy
 	LastStarShards int32 // 上一次用户的StarShards

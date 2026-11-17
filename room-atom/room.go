@@ -42,8 +42,12 @@ type Room struct {
 	// 安全
 	key string // 房间密钥
 
+	// 房间信息（等待房间展示用）
+	Name string // 房间名，房主可修改
+
 	// 游戏状态
 	GameStage *constants.AtomStage
+	// 房间绑定的章节与关卡：创建房间时确定，重开一局也不会被清空
 	ChapterID uint32
 	StageID   uint32
 	Seed      int32
@@ -96,6 +100,7 @@ func NewRoom(id int, stopChan chan int) *Room {
 
 		LastActiveTime: time.Now(),
 		key:            "",
+		Name:           "",
 		GameStage:      constants.NewAtomStage(constants.STAGE_InLobby),
 		StopChan:       stopChan,
 		destroyOnce:    sync.Once{},
@@ -113,12 +118,11 @@ func NewRoom(id int, stopChan chan int) *Room {
 }
 
 // 重置房间为大厅状态， 以允许下一场游戏
+// 房间名、密码、绑定关卡属于房间属性，跨局保留
 func (room *Room) Reset() {
 	room.RoomCtx.Reset()
 	room.Logic.Reset()
 	// room 本身reset
-	room.ChapterID = 0
-	room.StageID = 0
 	room.Seed = rand.Int31n(40960000)             // 重置随机种子
 	room.LastActiveTime = time.Now()              // 重置最后活动时间
 	room.GameStage.Store(constants.STAGE_InLobby) // 重置游戏状态为大厅
