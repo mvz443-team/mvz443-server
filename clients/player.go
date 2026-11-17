@@ -1,115 +1,89 @@
 package clients
 
 import (
-	"log"
 	messages "mvzserver/messages/pb"
 	"sync"
 	"sync/atomic"
-
-	"github.com/gofiber/websocket/v2"
 )
 
-// 直接转发客户端传来的数据， 不用封装message bytes，解析之后做
+// PlayerMessage 房间主循环收到的玩家上行消息。
 type PlayerMessage struct {
 	Player *Player // 发送消息的玩家
-	Data   []byte  // ws二进制消息内容
+	Data   []byte  // ws 二进制消息内容
 }
 
 var playerMessagePool = sync.Pool{
-	// New 指定了当池中没有可用对象时，如何创建一个新的
 	New: func() interface{} {
-		// 返回一个指向 PlayerMessage 的指针
 		return new(PlayerMessage)
 	},
 }
 
 func GetPlayerMessage(player *Player, data []byte) *PlayerMessage {
-	// 从池中获取一个对象，类型是 interface{}，需要做类型断言
 	msg := playerMessagePool.Get().(*PlayerMessage)
-
-	// 初始化/重置对象的状态
 	msg.Player = player
 	msg.Data = data
 	return msg
 }
 
 func ReleasePlayerMessage(msg *PlayerMessage) {
-	// 重置对象，避免旧数据泄露
 	msg.Player = nil
 	msg.Data = nil
-
-	// 将对象放回池中，等待下次复用
 	playerMessagePool.Put(msg)
 }
 
+// Player 房间内一名玩家的会话状态。
+// 并发约定：除标明 atomic 的字段外，全部由房间主循环 goroutine 独占。
 type Player struct {
-	Ctx      *ClientCtx            // 客户端上下文
-	SendChan chan<- *PlayerMessage // 客户端发送到服务器的消息
+	Ctx *ClientCtx // 客户端连接上下文
 
-	// 游戏相关状态
-	IsReady  bool // 是否准备好
+	IsReady  bool // 是否准备好（等待房间 / 选卡确认共用）
 	IsLoaded bool // 是否加载完毕
 
 	// 玩家昵称，由客户端连接时携带；仅用于房间内展示
 	Name string
-	// 加入房间时使用的密钥；房主改密码后旧成员仍可用它重连
+	// JoinKey 加入房间时使用的密钥；房主改密码后旧成员仍可用它重连
 	JoinKey string
 
-	// 游戏数据
-	LastEnergySum  int32 // 上一次用户的Energy
-	LastStarShards int32 // 上一次用户的StarShards
-	// 已经主动推送给该玩家的最大帧：普通 tick 只推新帧，避免极短逻辑帧下重复补发风暴。
+	// 已主动推送给该玩家的最大帧：普通 tick 只推新帧，避免重复补发风暴。
 	LastSyncedFrameID atomic.Uint32
-	// 开局确定性配置，由 ready 请求上报，AllReady 时规范化广播给所有人
+	// Loadout 开局确定性配置，由 ready 请求上报，AllReady 时规范化广播
 	Loadout *messages.LoadoutSnapshot
-	// 连接代数：重连后自增，旧的读循环退出时不得注销新连接
+	// ConnectionEpoch 连接代数：重连后自增，旧读循环退出时不得注销新连接
 	ConnectionEpoch int
 }
 
-func NewPlayer(ctx *ClientCtx, sendChan chan<- *PlayerMessage) Player {
+func NewPlayer(ctx *ClientCtx) Player {
 	return Player{
 		Ctx:      ctx,
-		IsReady:  false, // 默认不准备
-		IsLoaded: false, // 默认不加载
-
-		SendChan: sendChan, // 发送通道
+		IsReady:  false,
+		IsLoaded: false,
 	}
 }
 
+// ResetData 一局结束后清空对局相关状态（房间主循环独占调用）。
 func (p *Player) ResetData() {
 	p.IsReady = false
 	p.IsLoaded = false
-	p.LastEnergySum = 0
-	p.LastStarShards = 0
 	p.Loadout = nil
 	p.LastSyncedFrameID.Store(0)
 	if p.Ctx != nil {
-		p.Ctx.LatestFrameID.Store(0)    // 重置最新帧ID
-		p.Ctx.LatestAckFrameID.Store(0) // 重置最新确认帧ID
+		p.Ctx.LatestFrameID.Store(0)
+		p.Ctx.LatestAckFrameID.Store(0)
 	}
 }
 
 func (p *Player) GetID() int {
 	if p == nil || p.Ctx == nil {
-		return -1 // 返回一个表示无效的ID
+		return -1
 	}
 	return p.Ctx.Id
 }
 
-// 写入要发送给客户端的信息
-func (p *Player) Write(bytes []byte) {
-	// 检查 player 和其上下文是否有效
+// Write 把序列化后的消息送入该玩家的发送通道。
+// 连接假死时返回 false；调用方无需处理，断开事件由读循环产生。
+func (p *Player) Write(bytes []byte) bool {
 	if p == nil || p.Ctx == nil {
-		log.Printf("🔴 Cannot write message: player or context is nil")
-		return
+		return false
 	}
-
-	err := p.Ctx.SafeWriteMessage(websocket.BinaryMessage, bytes)
-	if err != nil {
-		// 成功写不打印日志：每帧广播 × 玩家数会产生大量同步 IO
-		log.Printf("🔴 Failed to write message to player %d: %v", p.GetID(), err)
-	}
-	// TODO: 错判断， 重连
+	return p.Ctx.Send(bytes)
 }
-
-// TODO: 定义一个处理重连的东西

@@ -590,6 +590,8 @@ func (room *Room) enterPostGameAfterEndFrame() {
 		},
 	}, nil)
 	log.Printf("🟢 房间 %d 进入 PostGame，结束帧=%d，保留历史帧供补发", room.ID, room.EndGameFrameID)
+	// 记录 PostGame 起始时间：超过 PostGameLinger 无人“返回房间”时自动回 InLobby
+	room.startPostGameClock()
 }
 
 // 定时器触发的广播转发游戏操作帧
@@ -603,76 +605,25 @@ func (room *Room) runGameTick() {
 	room.pruneFrameHistory()
 	room.syncAllClients(false)
 	room.tickEndGameArbitration()
+	// 断线宽限期检查：超时判负由权威结束帧统一落地
+	room.tickReconnectGrace()
 }
 
-func (room *Room) HasAllPlayerSync() bool {
-	// 延迟等待，最多容忍 maxDelayFrames 帧的延迟
-	var minFrameID uint32
-	var NextRenderFrame = room.RoomCtx.NextFrameID.Load()
-	if NextRenderFrame < constants.MaxDelayFrames {
-		minFrameID = 0
-	} else {
-		minFrameID = NextRenderFrame - constants.MaxDelayFrames
-	}
-
-	synced := true
-	// 遍历每个玩家的 frameID，若有任意玩家低于阈值，则返回 false
-	room.RoomCtx.Players.Range(func(key int, value *Player) bool {
-		// 检查玩家是否为空或玩家上下文为空
-		if value == nil || value.Ctx == nil {
-			synced = false
-			return false
-		}
-		// 获取当前玩家实际的帧号
-		player_current_frame := value.Ctx.LatestFrameID.Load()
-		if player_current_frame < minFrameID {
-			synced = false
-			return false
-		}
-		return true
-	})
-	return synced
-}
-
-// 用户可能会疯狂的消耗游戏资源从而种植/使用超过自己能量的植物
-// 所以需要在处理请求时进行校验
-func (room *Room) CouldAffordable(player *Player, base_req *messages.RequestBlank,
+// CouldAffordable 资源校验：客户端自报的总量必须能覆盖本次消耗。
+// 服务端不模拟资源产出（帧同步架构下权威数值在客户端模型中），
+// 这里只拦截明显的非法值；进一步的增量校验见资源防作弊 backlog。
+func (room *Room) CouldAffordable(player *Player,
 	energy_cost int32, starshards_cost int32,
 	energy_sum int32, starshards_sum int32,
-	lastFrameID uint32, lastAckFrameID uint32,
 ) bool {
-	// 检查 player 是否为 nil
 	if player == nil {
 		return false
 	}
-
-	// 简化逻辑：对于第一次种植或使用星之碎片，只通过用户报的总量和消耗来判断
-	isFirstEnergyOperation := player.LastEnergySum == 0 || lastFrameID <= 0
-	isFirstStarShardsOperation := player.LastStarShards == 0 || lastFrameID <= 0
-
-	// 验证能量消耗
-	energyAffordable := true
-	if energy_cost > 0 {
-		if isFirstEnergyOperation {
-			// 第一次种植：只检查总量是否足够
-			energyAffordable = energy_sum >= energy_cost
-		} else {
-			// 非第一次：检查客户端自报的阳光是否足够
-			energyAffordable = energy_sum >= energy_cost
-		}
+	if energy_cost > 0 && energy_sum < energy_cost {
+		return false
 	}
-
-	// 验证星之碎片消耗
-	starShardsAffordable := true
-	if starshards_cost > 0 {
-		if isFirstStarShardsOperation {
-			// 第一次使用星之碎片：只检查总量是否足够
-			starShardsAffordable = starshards_sum >= starshards_cost
-		} else {
-			// 非第一次：检查客户端自报的星之碎片是否足够
-			starShardsAffordable = starshards_sum >= starshards_cost
-		}
+	if starshards_cost > 0 && starshards_sum < starshards_cost {
+		return false
 	}
-
-	return energyAffordable && starShardsAffordable
+	return true
 }

@@ -70,6 +70,16 @@ type Room struct {
 	Checkpoints          map[uint32]*stateCheckpoint
 	LastCheckpointFrame uint32
 
+	// InGame 断线席位管理：掉线时刻与宽限期截止时刻。
+	// 宽限期内可重连补帧；超时由 tickReconnectGrace 判负结束。
+	ReconnectDeadline time.Time
+	// 有玩家处于断线保留状态时为 true。
+	AnyPlayerDisconnected bool
+
+	// PostGame：结束后等待玩家点“返回房间”回 InLobby；
+	// 超过 PostGameLinger 无人操作则自动返回。
+	PostGameSince time.Time
+
 	// manager
 	destroyOnce    sync.Once
 	LastActiveTime time.Time  // 上次活动时间
@@ -117,8 +127,8 @@ func NewRoom(id int, stopChan chan int) *Room {
 	}
 }
 
-// 重置房间为大厅状态， 以允许下一场游戏
-// 房间名、密码、绑定关卡属于房间属性，跨局保留
+// Reset 房间从 PostGame 返回等待房间，允许下一场游戏。
+// 房间名、密码、绑定关卡属于房间属性，跨局保留。
 func (room *Room) Reset() {
 	room.RoomCtx.Reset()
 	room.Logic.Reset()
@@ -132,6 +142,10 @@ func (room *Room) Reset() {
 	}
 	room.scheduledFrames = make(map[uint32]*FrameSubmission)
 	room.frameHistory = make(map[uint32]*messages.InGameResponse)
+	// 清空对局期间的席位管理状态
+	room.ReconnectDeadline = time.Time{}
+	room.AnyPlayerDisconnected = false
+	room.PostGameSince = time.Time{}
 }
 
 // 摧毁房间(直接入口)

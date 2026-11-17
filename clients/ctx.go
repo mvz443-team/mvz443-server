@@ -1,159 +1,133 @@
 package clients
 
-import (
-	"fmt"
-	"mvzserver/constants"
-	"net"
-	"sync"
+// client player context
+// 封装长连接等信息。游戏逻辑无关，帧同步游戏不记录玩家行为。
+//
+// 并发约定：
+//   - writer 只由本类型内部方法访问；外部统一走 Send/Close/IsConnected。
+//   - 写路径独占在 ConnWriter goroutine（无阻塞主循环风险）。
+//   - LatestFrameID / LatestAckFrameID / lastMessageAtMs 为 atomic，
+//     读循环与房间主循环都会访问。
+//   - State 由房间主循环独占写。
 
+import (
+	"mvzserver/constants"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/gofiber/websocket/v2"
 )
 
-// client player context
-// 封装如长连接等信息
-// 游戏逻辑无关, 因为帧同步游戏暂时不记录游戏玩家行为
-
 type ClientCtx struct {
-	mu   sync.RWMutex    // 保护连接的读写锁
-	Conn *websocket.Conn // 长连接
-	// 底层 TCP 连接：读循环会长时间持读锁阻塞在 ReadMessage 上，
-	// 踢人等需要立刻断开连接的场景只能绕过读写锁直接关闭它。
-	rawConn net.Conn
+	Id   int    // 用户 id
+	Name string // 展示名（仅日志用）
 
-	// 信息
-	Id int // 用户id
+	// Conn 连接句柄。只在读循环 goroutine 内使用（StartServeClient 独占读）；
+	// 关闭统一走 writer，不触碰该字段。
+	Conn *websocket.Conn
 
-	// 帧同步信息
+	// 帧同步信息（atomic）
+	LatestFrameID    atomic.Uint32 // 最近服务器获知的该用户所在帧
+	LatestAckFrameID atomic.Uint32 // 最近该用户 ACK 的帧
 
-	// 最近服务器获知的该用户的所在帧（原子变量）
-	LatestFrameID atomic.Uint32
+	// 上次收到该连接任意消息的时间戳（毫秒）；由读循环更新，主循环读取。
+	// 用于心跳超时判定：大厅阶段没有业务帧，靠它发现假死连接。
+	lastMessageAtMs atomic.Int64
 
-	// 最近该用户ACK的帧（原子变量）
-	LatestAckFrameID atomic.Uint32
+	// 写通道：独立 goroutine 独占写连接，慢连接不阻塞房间主循环
+	writer *ConnWriter
+
+	// closeOnce 保护 writer 只关闭一次
+	closeOnce sync.Once
 
 	// 其他信息
-	ReconnectionToken string                // 重连令牌， 用服务器对称加密得到的包含有用户id,房间信息的token           // 用于重连验证的票据
-	State             constants.PlayerState // 当前状态（在线/断线）
+	State constants.PlayerState // 当前状态（在线/断线），房间主循环独占写
 }
 
-// unsafeConner 由 fasthttp 的 hijackConn 实现，可取出真正持有 socket 的连接。
-type unsafeConner interface {
-	UnsafeConn() net.Conn
-}
-
+// NewClientCtx 创建客户端上下文并启动异步写 goroutine。
 func NewClientCtx(conn *websocket.Conn, id int) *ClientCtx {
-	var rawConn net.Conn
-	if conn != nil {
-		rawConn = conn.UnderlyingConn()
-		// hijackConn.Close 在 KeepHijackedConns=false 时是空实现，必须取到内部真实连接
-		if unwrapper, ok := rawConn.(unsafeConner); ok {
-			rawConn = unwrapper.UnsafeConn()
-		}
+	ctx := &ClientCtx{
+		Id:     id,
+		Conn:   conn,
+		writer: NewConnWriter(id, conn),
 	}
-	return &ClientCtx{
-		Conn:    conn,
-		rawConn: rawConn,
-		Id:      id,
-		// atomic.Uint32 默认零值即可，无需额外初始化
-	}
+	// 连接建立时刻即视为一次心跳，避免“从未收到消息”时永不超时
+	ctx.TouchHeartbeat()
+	return ctx
 }
 
-// ForceClose 直接关闭底层连接，不等待读循环释放读锁。
-// 用于房主踢人：目标玩家的读循环仍阻塞在 ReadMessage 上，常规 Close 会阻塞房间主循环。
+// ForceClose 直接关闭底层连接，不等待读循环退出。
+// 用于踢人：目标玩家的读循环仍阻塞在 ReadMessage 上。
 func (c *ClientCtx) ForceClose() {
-	if c.rawConn != nil {
-		_ = c.rawConn.Close()
-	}
+	c.Close()
 }
 
+// Close 关闭连接与写通道；幂等。
 func (c *ClientCtx) Close() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.Conn != nil {
-		fmt.Printf("🔴 Closing connection for client %d\n", c.Id)
-		c.Conn.Close()
-		c.Conn = nil // 设置为 nil 以防止后续使用
-		fmt.Printf("🔴 Connection closed for client %d\n", c.Id)
-	} else {
-		fmt.Printf("🔴 Connection already nil for client %d\n", c.Id)
+	if c == nil || c.writer == nil {
+		return
 	}
+	c.closeOnce.Do(func() {
+		c.writer.Close()
+	})
 }
 
-// Deprecated: conn只写二进制
-func (c *ClientCtx) WriteJSON(v interface{}) error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	if c.Conn == nil {
-		return fmt.Errorf("connection is nil")
+// Send 经写通道异步发送二进制消息；连接假死（队列满/已关）返回 false。
+func (c *ClientCtx) Send(data []byte) bool {
+	if c == nil || c.writer == nil {
+		return false
 	}
-	return c.Conn.WriteJSON(v)
+	return c.writer.Send(data)
 }
 
-// SafeReadMessage 安全地读取WebSocket消息
-func (c *ClientCtx) SafeReadMessage() (messageType int, p []byte, err error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	if c.Conn == nil {
-		return 0, nil, fmt.Errorf("connection is nil")
+// IsConnected 判断写通道是否仍然存活。
+func (c *ClientCtx) IsConnected() bool {
+	if c == nil || c.writer == nil {
+		return false
 	}
+	return !c.writer.isClosedFlag()
+}
 
-	// 尝试读取消息
-	messageType, p, err = c.Conn.ReadMessage()
-	if err != nil {
-		// 只在非正常关闭时输出详细错误
-		if !websocket.IsCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure, websocket.CloseNoStatusReceived) {
-			fmt.Printf("� SafeReadMessage error for client %d: %v (type: %T)\n", c.Id, err, err)
-		}
+// SafeReadMessage 从连接读取一条消息；连接关闭后返回错误。
+func (c *ClientCtx) SafeReadMessage(conn *websocket.Conn) (messageType int, p []byte, err error) {
+	if conn == nil {
+		return 0, nil, ErrConnClosed
+	}
+	messageType, p, err = conn.ReadMessage()
+	if err == nil {
+		c.TouchHeartbeat()
 	}
 	return messageType, p, err
 }
 
-// SafeWriteMessage 安全地写入WebSocket消息
-func (c *ClientCtx) SafeWriteMessage(messageType int, data []byte) error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	if c.Conn == nil {
-		return fmt.Errorf("connection is nil")
-	}
-
-	// 添加调试日志
-	err := c.Conn.WriteMessage(messageType, data)
-	if err != nil {
-		fmt.Printf("🔴 SafeWriteMessage error for client %d: %v\n", c.Id, err)
-	}
-	return err
+// TouchHeartbeat 记录最近一次收到消息的时间。
+func (c *ClientCtx) TouchHeartbeat() {
+	c.lastMessageAtMs.Store(time.Now().UnixMilli())
 }
 
-// IsConnected 安全地检查连接是否有效
-func (c *ClientCtx) IsConnected() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.Conn != nil
-}
-
-// GetRemoteAddr 安全地获取远程地址
-func (c *ClientCtx) GetRemoteAddr() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.Conn == nil {
-		return ""
+// IsHeartbeatExpired 判断该连接是否已超过 timeout 没有任何消息。
+// 大厅阶段客户端不发业务帧，靠该函数发现拔线/假死连接。
+func (c *ClientCtx) IsHeartbeatExpired(timeout time.Duration) bool {
+	last := c.lastMessageAtMs.Load()
+	if last == 0 {
+		return false
 	}
-	return c.Conn.RemoteAddr().String()
+	return time.Now().UnixMilli()-last > timeout.Milliseconds()
 }
 
+// UpdatePlayerFrame 单调更新该客户端的帧进度与 ACK。
 func (c *ClientCtx) UpdatePlayerFrame(frameId, ackFrameId uint32) {
-	old1 := c.LatestFrameID.Load()
-	if frameId > old1 {
-		c.LatestFrameID.Store(frameId)
+	for {
+		old := c.LatestFrameID.Load()
+		if frameId <= old || c.LatestFrameID.CompareAndSwap(old, frameId) {
+			break
+		}
 	}
-	old2 := c.LatestAckFrameID.Load()
-	if ackFrameId > old2 {
-		c.LatestAckFrameID.Store(ackFrameId)
+	for {
+		old := c.LatestAckFrameID.Load()
+		if ackFrameId <= old || c.LatestAckFrameID.CompareAndSwap(old, ackFrameId) {
+			break
+		}
 	}
 }

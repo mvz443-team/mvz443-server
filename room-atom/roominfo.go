@@ -19,6 +19,8 @@ type peerInfo struct {
 	Id    int    `json:"id"`
 	Name  string `json:"name"`
 	Ready bool   `json:"ready"`
+	// 1=在线, 2=断线（等待重连）；见 constants.PlayerState
+	State int `json:"state"`
 }
 
 func (room *Room) GetName() string {
@@ -43,7 +45,21 @@ func (room *Room) SetBoundStage(chapterID, stageID uint32) {
 func (room *Room) buildPeersJSON() string {
 	peers := make([]peerInfo, 0, 2)
 	room.RoomCtx.Players.Range(func(_ int, player *clients.Player) bool {
-		if player == nil || player.Ctx == nil || !player.Ctx.IsConnected() {
+		if player == nil || player.Ctx == nil {
+			return true
+		}
+		// InGame 掉线保留席位的玩家也要下发（state=2），让对手看到断线提示
+		if player.Ctx.State != constants.PlayerStateConnected && room.GameStage.EqualTo(constants.STAGE_InGame) {
+			peers = append(peers, peerInfo{
+				Addr:  peerAddrPlaceholder,
+				Id:    player.Ctx.Id,
+				Name:  player.Name,
+				Ready: player.IsReady,
+				State: int(constants.PlayerStateDisconnected),
+			})
+			return true
+		}
+		if !player.Ctx.IsConnected() {
 			return true
 		}
 		peers = append(peers, peerInfo{
@@ -51,6 +67,7 @@ func (room *Room) buildPeersJSON() string {
 			Id:    player.Ctx.Id,
 			Name:  player.Name,
 			Ready: player.IsReady,
+			State: int(constants.PlayerStateConnected),
 		})
 		return true
 	})

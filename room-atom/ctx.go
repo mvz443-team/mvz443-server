@@ -1,14 +1,13 @@
 package roomatom
 
-// RoomCtx、ClientCtx、AddUser、DelUser
-// 消息发送 []byte 接口
+// RoomCtx：房间内玩家表、阶段广播与消息发送。
+// 所有方法都必须在房间主循环（Run 的 goroutine）中调用，避免并发修改玩家状态；
+// 广播写经 ClientCtx 的异步写通道，不会阻塞主循环。
 
 import (
 	"log"
 	"mvzserver/clients"
 	"mvzserver/constants"
-	"sync"
-
 	"sync/atomic"
 	"time"
 
@@ -20,76 +19,39 @@ import (
 
 type ClientCtx = clients.ClientCtx
 
-// RoomCtx 使用 sync.Map 保证并发安全
-// room ctx 维持用户相关的状态和信息
+// RoomCtx 房间级共享状态。
+// 除 NextFrameID 为 atomic 外，其余字段由房间主循环独占。
 type RoomCtx struct {
-	OwnerUserID int       // owner id of room
+	OwnerUserID int       // 房主 id
 	Players     PlayerMap // key: int, value: *Player
-	nextId      int32     // 用于生成用户ID，初始值设置为100
+	nextId      int32     // 玩家 id 生成器，初始 100
 
-	// 网络
-	// 发送给客户端渲染的下一帧ID
+	// 下一帧渲染 id（atomic；GameTicker 触发的主循环写，HTTP goroutine 读）
 	NextFrameID *atomic.Uint32
-	// 某帧下一次操作的序号
-	// FrameID - OperationID
-	// uint32 - uint32
-	OperationID    map[uint32]uint32
-	OperationMutex sync.Mutex // 确保操作ID的原子性
 
-	// game logic ticker
-	// 一直是nil 直到 InGame 状态切换前赋值
+	// game logic ticker；InGame 前为 nil
 	GameTicker *time.Ticker
-}
-
-// 获得某帧下一次操作的序号并自增
-func (m *RoomCtx) GetNextOperationID(frameID uint32) uint32 {
-	m.OperationMutex.Lock()
-	defer m.OperationMutex.Unlock()
-	// 如果不存在，则返回1，存入2
-	nextID, exists := m.OperationID[frameID]
-	if !exists {
-		m.OperationID[frameID] = 2
-		return 1
-	}
-	// 如果存在，则返回当前值并自增
-	m.OperationID[frameID] = nextID + 1
-	return nextID
-}
-
-// 在广播某帧后，删除他的map记录
-func (m *RoomCtx) DeleteOperationID(frameID uint32) {
-	m.OperationMutex.Lock()
-	defer m.OperationMutex.Unlock()
-	delete(m.OperationID, frameID)
 }
 
 func NewRoomCtx() *RoomCtx {
 	NextRenderFrame := &atomic.Uint32{}
-	NextRenderFrame.Store(1) // 下一帧渲染为1，当前都在0
+	NextRenderFrame.Store(1) // 下一帧渲染为 1，当前都在 0
 	return &RoomCtx{
-		NextFrameID: NextRenderFrame, // 初始帧ID为0
-		OwnerUserID: 0,               // unset
+		NextFrameID: NextRenderFrame,
+		OwnerUserID: 0,
 		nextId:      100,
-
-		OperationID:    make(map[uint32]uint32), // 初始化操作ID映射
-		OperationMutex: sync.Mutex{},            // 初始化互斥锁
-
-		GameTicker: nil, // 初始没有， 只有开始游戏后才会NewTimer
+		GameTicker:  nil,
 	}
 }
 
-// 重置状态以允许下场游戏
+// Reset 一局结束后重置，允许下一场游戏。
 func (m *RoomCtx) Reset() {
-	m.NextFrameID.Store(1) // 重置帧ID为1
-	m.OperationMutex.Lock()
-	m.OperationID = make(map[uint32]uint32)
-	m.OperationMutex.Unlock()
+	m.NextFrameID.Store(1)
 	if m.GameTicker != nil {
 		m.GameTicker.Stop()
 	}
-	m.GameTicker = nil // 重置为nil
-	// players 的数据
-	m.Players.Range(func(key int, player *clients.Player) bool {
+	m.GameTicker = nil
+	m.Players.Range(func(_ int, player *clients.Player) bool {
 		if player != nil {
 			player.ResetData()
 		}
@@ -97,13 +59,10 @@ func (m *RoomCtx) Reset() {
 	})
 }
 
-// -----------------
-// tick
-
-// 设置游戏逻辑定时器
+// StartGameTicker 启动逻辑帧定时器（房间主循环独占）。
 func (m *RoomCtx) StartGameTicker() {
 	if m.GameTicker != nil {
-		m.GameTicker.Stop() // 停止之前的 ticker
+		m.GameTicker.Stop()
 	}
 	m.GameTicker = time.NewTicker(time.Duration(constants.FrameIntervalMs) * time.Millisecond)
 	log.Printf("⏱️ 逻辑帧间隔=%dms，命令窗口=[+%d,+%d]帧", constants.FrameIntervalMs, constants.CommandLeadFrames, constants.MaxDelayFrames)
@@ -117,24 +76,22 @@ func (m *RoomCtx) CreateClientCtxFromConn(conn *websocket.Conn) *ClientCtx {
 	return clients.NewClientCtx(conn, newId)
 }
 
-// AddUser
+// AddUser 注册玩家；首位加入者成为房主。
 func (m *RoomCtx) AddUser(p *clients.Player) {
 	m.Players.Store(p.Ctx.Id, p)
-	log.Printf("🔵 Player %d added to room context", p.GetID())
-	// 如果 OwnerUserID 还没设置，则设置为第一个加入的用户
 	if m.OwnerUserID == 0 {
 		m.OwnerUserID = p.Ctx.Id
 	}
 }
 
-// DelUser 删除指定用户
+// DelUser 删除指定用户。
 func (m *RoomCtx) DelUser(id int) {
 	m.Players.Delete(id)
 }
 
-// CloseAll 关闭所有用户连接
+// CloseAll 关闭所有用户连接。
 func (m *RoomCtx) CloseAll() {
-	m.Players.Range(func(key int, player *clients.Player) bool {
+	m.Players.Range(func(_ int, player *clients.Player) bool {
 		if player != nil && player.Ctx != nil {
 			player.Ctx.Close()
 		}
@@ -142,53 +99,40 @@ func (m *RoomCtx) CloseAll() {
 	})
 }
 
-// GetPeerAddr 返回所有连接的远程地址
-func (m *RoomCtx) GetPeerAddr() []string {
-	var addrs []string
-	m.Players.Range(func(key int, player *clients.Player) bool {
-		if player != nil && player.Ctx != nil {
-			if addr := player.Ctx.GetRemoteAddr(); addr != "" {
-				addrs = append(addrs, addr)
-			}
-		}
-		return true
-	})
-	return addrs
-}
-
 // -------------------
 // 发送信息
 // -------------------
 
-// 广播
+// BroadcastMessage 向房间内所有在线玩家广播。
+// 写入经各连接的异步发送通道，慢连接不会阻塞房间主循环。
 func (m *RoomCtx) BroadcastMessage(msg protoreflect.ProtoMessage, exclude_ids []int) {
 	data, err := proto.Marshal(msg)
 	if err != nil {
-		panic(err) // 处理错误
+		// protobuf 契约消息不会失败；出现说明代码 bug，记录并放弃本条，
+		// 不能因一条编码失败炸掉整个房间
+		log.Printf("🔴 BroadcastMessage marshal 失败: %v", err)
+		return
 	}
-	// 先制作mapset
+
 	excludeSet := mapset.NewSet[int]()
 	for _, id := range exclude_ids {
 		excludeSet.Add(id)
 	}
 
-	m.Players.Range(func(key int, player *clients.Player) bool {
+	m.Players.Range(func(_ int, player *clients.Player) bool {
 		if player == nil || player.Ctx == nil || !player.Ctx.IsConnected() {
-			return true // 跳过无效的玩家
+			return true
 		}
-		// 检查是否在排除列表中
 		if excludeSet.Contains(player.Ctx.Id) {
-			return true // 在排除列表中，继续遍历
+			return true
 		}
-
-		player.Write(data) // 发送消息
+		player.Write(data)
 		return true
 	})
 }
 
-// 单播
+// SendMessageToUser 单播指定玩家。
 func (m *RoomCtx) SendMessageToUser(msg protoreflect.ProtoMessage, userId int) {
-	// 通过id 找到player
 	if value, ok := m.Players.Load(userId); ok {
 		m.SendMessageToUserByPlayer(msg, value)
 	}
@@ -197,15 +141,15 @@ func (m *RoomCtx) SendMessageToUser(msg protoreflect.ProtoMessage, userId int) {
 func (m *RoomCtx) SendMessageToUserByPlayer(msg protoreflect.ProtoMessage, player *Player) {
 	data, err := proto.Marshal(msg)
 	if err != nil {
-		log.Printf("SendMessageToUserByPlayer: %v", err)
-		panic(err) // 处理错误
+		log.Printf("🔴 SendMessageToUserByPlayer marshal 失败: %v", err)
+		return
 	}
 	if player != nil && player.Ctx != nil && player.Ctx.IsConnected() {
-		player.Write(data) // 发送消息
+		player.Write(data)
 	}
 }
 
-// GetPlayerCount 返回当前玩家数量
+// GetPlayerCount 当前玩家数量。
 func (m *RoomCtx) GetPlayerCount() uint32 {
 	return uint32(m.Players.Len())
 }

@@ -66,7 +66,7 @@ func (room *Room) HandleClientJoin(c *websocket.Conn, userName string) {
 	log.Printf("🟢 Connection is still valid after sending response")
 
 	// 创建一个新的玩家实例
-	p := clients.NewPlayer(ctx, room.incomingMessages)
+	p := clients.NewPlayer(ctx)
 	p.Name = utils.NormalizeUserName(userName)
 	if p.Name == "" {
 		p.Name = "player"
@@ -128,13 +128,9 @@ func (room *Room) handleUnregister(player *clients.Player) {
 		return
 	}
 
-	// InGame 断线保留席位，等待同 id 重连；历史帧窗口即重连宽限期。
+	// InGame 断线保留席位，等待同 id 重连；宽限期内可补帧恢复。
 	if room.GameStage.EqualTo(constants.STAGE_InGame) {
-		player.Ctx.State = constants.PlayerStateDisconnected
-		if player.Ctx.IsConnected() {
-			player.Ctx.Close()
-		}
-		log.Printf("🟡 玩家 %d 在 InGame 掉线，保留席位等待重连", player.Ctx.Id)
+		room.markPlayerDisconnected(player)
 		return
 	}
 
@@ -184,7 +180,6 @@ func (room *Room) handleReconnect(request *ReconnectRequest) {
 	newCtx := clients.NewClientCtx(request.Conn, request.PlayerID)
 	newCtx.LatestFrameID.Store(target.Ctx.LatestFrameID.Load())
 	newCtx.LatestAckFrameID.Store(target.Ctx.LatestAckFrameID.Load())
-	newCtx.ReconnectionToken = target.Ctx.ReconnectionToken
 	newCtx.State = constants.PlayerStateConnected
 
 	oldCtx := target.Ctx
@@ -195,6 +190,7 @@ func (room *Room) handleReconnect(request *ReconnectRequest) {
 	}
 
 	log.Printf("🟢 玩家 %d 重连成功，从帧 %d 继续", request.PlayerID, newCtx.LatestAckFrameID.Load())
+	room.onPlayerReconnected(target)
 	room.sendReplayFromCheckpoint(target)
 	reply(target)
 }
@@ -281,6 +277,9 @@ func (room *Room) handlePlayerMessage(msg *PlayerMessage) {
 		room.HandleRequestUpdateRoom(msg.Player, payload.UpdateRoom)
 	case *messages.Request_KickPlayer:
 		room.HandleRequestKickPlayer(msg.Player, payload.KickPlayer)
+	// PostGame 结算后返回等待房间
+	case *messages.Request_ReturnToLobby:
+		room.HandleRequestReturnToLobby(msg.Player, payload.ReturnToLobby)
 
 	default:
 		// 未知请求类型
@@ -571,10 +570,6 @@ func (room *Room) HandleRequestCardPlant(player *Player, req *messages.RequestCa
 		return
 	}
 
-	// 在调用前获取原子变量的值
-	lastFrameID := player.Ctx.LatestFrameID.Load()
-	lastAckFrameID := player.Ctx.LatestAckFrameID.Load()
-
 	// 此帧想要发生的时机晚于下一帧序号，但不允许调度过远的未来帧
 	processFrameID, validFrame := room.resolveProcessFrameID(req.Base)
 	if !validFrame {
@@ -587,7 +582,7 @@ func (room *Room) HandleRequestCardPlant(player *Player, req *messages.RequestCa
 		room.rejectOperation(player, req.Base, processFrameID, "非法的消耗或资源数值")
 		return
 	}
-	if !room.CouldAffordable(player, req.Base.Base, req.Cost, 0, req.EnergySum, req.StarShardsSum, lastFrameID, lastAckFrameID) {
+	if !room.CouldAffordable(player, req.Cost, 0, req.EnergySum, req.StarShardsSum) {
 		room.rejectOperation(player, req.Base, processFrameID, "资源不足或自报资源非法")
 		return
 	}
@@ -648,10 +643,6 @@ func (room *Room) HandleRequestStarShards(player *Player, req *messages.RequestS
 		return
 	}
 
-	// 在调用前获取原子变量的值
-	lastFrameID := player.Ctx.LatestFrameID.Load()
-	lastAckFrameID := player.Ctx.LatestAckFrameID.Load()
-
 	// 此帧想要发生的时机晚于下一帧序号，但不允许调度过远的未来帧
 	processFrameID, validFrame := room.resolveProcessFrameID(req.Base)
 	if !validFrame {
@@ -664,7 +655,7 @@ func (room *Room) HandleRequestStarShards(player *Player, req *messages.RequestS
 		room.rejectOperation(player, req.Base, processFrameID, "非法的消耗或资源数值")
 		return
 	}
-	if !room.CouldAffordable(player, req.Base.Base, 0, req.Cost, req.EnergySum, req.StarShardsSum, lastFrameID, lastAckFrameID) {
+	if !room.CouldAffordable(player, 0, req.Cost, req.EnergySum, req.StarShardsSum) {
 		room.rejectOperation(player, req.Base, processFrameID, "资源不足或自报资源非法")
 		return
 	}

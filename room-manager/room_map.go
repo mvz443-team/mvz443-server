@@ -24,6 +24,22 @@ func (rm *RoomMap) Delete(key int) {
 	rm.m.Delete(key)
 }
 
+// LoadOrStore 原子的“不存在则写入”：并发创建同 key 时只有一方成功。
+// loaded=true 表示 key 已存在，返回已有房间。
+func (rm *RoomMap) LoadOrStore(key int, value *Room) (actual *Room, loaded bool) {
+	v, loaded := rm.m.LoadOrStore(key, value)
+	if !loaded {
+		return value, false
+	}
+	r, ok := v.(*Room)
+	if !ok {
+		// 类型断言失败不应发生；退化为覆盖写入
+		rm.m.Store(key, value)
+		return value, false
+	}
+	return r, true
+}
+
 func (rm *RoomMap) Range(f func(key int, value *Room) bool) {
 	rm.m.Range(func(k, v interface{}) bool {
 		ki, ok1 := k.(int)
