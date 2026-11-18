@@ -37,3 +37,6 @@ mvzserver.exe
 mvzserver
 
 -p/
+
+# log in development
+desync-logs/

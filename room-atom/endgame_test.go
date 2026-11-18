@@ -74,3 +74,27 @@ func TestEndGameVoteIsIdempotent(t *testing.T) {
 		t.Fatalf("重复上报不得覆盖首次结果，得到 %d", result)
 	}
 }
+
+func TestEndGameResultIsFrozenAfterScheduling(t *testing.T) {
+	// 双方一致胜利 → 排入权威结束帧（结果=1）。随后模拟掉线宽限把投票覆写为判负，
+	// 结算广播必须使用定稿的缓存结果，不能与权威帧里的 1 矛盾。
+	room := testArbitrationRoom(100)
+	p1, p2 := testVotingPlayer(100), testVotingPlayer(101)
+	room.RoomCtx.Players.Store(100, p1)
+	room.RoomCtx.Players.Store(101, p2)
+
+	room.RegisterEndGameVote(p1, 1)
+	room.RegisterEndGameVote(p2, 1)
+	submission := room.scheduledFrames[room.pendingEndFrame]
+	event := submission.Operations[0].Payload.(*messages.InGameOperation_GameEvent)
+	if event.GameEvent.Message != "1" || room.EndGameResult != 1 {
+		t.Fatalf("权威帧结果应定稿为胜利，得到 event=%s cached=%d", event.GameEvent.Message, room.EndGameResult)
+	}
+
+	// 掉线宽限覆写投票（复现 tickReconnectGrace 的行为）
+	room.EndGameVotes[100] = 0
+	room.EndGameVotes[101] = 0
+	if result := room.EndGameResult; result != 1 {
+		t.Fatalf("定稿结果不得被后续投票覆写，得到 %d", result)
+	}
+}

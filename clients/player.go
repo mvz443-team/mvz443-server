@@ -36,8 +36,8 @@ func ReleasePlayerMessage(msg *PlayerMessage) {
 type Player struct {
 	Ctx *ClientCtx // 客户端连接上下文
 
-	IsReady  bool   // 是否准备好（等待房间 / 选卡确认共用）
-	IsLoaded bool   // 是否加载完毕
+	IsReady  bool // 是否准备好（等待房间 / 选卡确认共用）
+	IsLoaded bool // 是否加载完毕
 	// LoadProgress Loading 阶段加载进度，1..100；100 表示完全加载好等待同步。
 	// 由房间主循环独占读写，仅通过 playerLoaded 请求推进。
 	LoadProgress uint32
@@ -74,6 +74,8 @@ func (p *Player) ResetData() {
 	if p.Ctx != nil {
 		p.Ctx.LatestFrameID.Store(0)
 		p.Ctx.LatestAckFrameID.Store(0)
+		p.Ctx.StateHashVersion.Store(0)
+		p.Ctx.StateHashVersionReported.Store(false)
 	}
 }
 

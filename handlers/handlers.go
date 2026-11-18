@@ -67,7 +67,9 @@ func (sh *ServerHandler) HandleLeaveUserRoom(c *fiber.Ctx) error {
 
 func (sh *ServerHandler) HandleWS(c *websocket.Conn) {
 	// 协议包很小，限制单个 WS 消息大小，防止超大包直接进内存
-	c.SetReadLimit(8 * 1024)
+	// checkpoint 的 inline 快照是重连恢复的唯一锚点。128KB 的正文加上
+	// protobuf 包装仍远小于该上限；普通帧消息只有几十字节。
+	c.SetReadLimit(512 * 1024)
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("处理玩家注册时捕获到 Panic: %v\n", r)

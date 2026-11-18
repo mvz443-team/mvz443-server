@@ -30,6 +30,13 @@ type ClientCtx struct {
 	// 帧同步信息（atomic）
 	LatestFrameID    atomic.Uint32 // 最近服务器获知的该用户所在帧
 	LatestAckFrameID atomic.Uint32 // 最近该用户 ACK 的帧
+	// StateHashVersion 客户端确定性哈希口径版本；0 表示旧客户端未上报。
+	StateHashVersion atomic.Uint32
+	// StateHashVersionReported 是否已经从该客户端的心跳中收到过版本字段。
+	// 不能用 LatestFrameID > 0 代替：重连后的新上下文会从 checkpoint 帧
+	// 开始，但客户端尚未上报版本，此时把默认值 0 当成“旧客户端”会误报
+	// 版本不一致。
+	StateHashVersionReported atomic.Bool
 
 	// 上次收到该连接任意消息的时间戳（毫秒）；由读循环更新，主循环读取。
 	// 用于心跳超时判定：大厅阶段没有业务帧，靠它发现假死连接。

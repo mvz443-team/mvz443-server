@@ -49,7 +49,8 @@ func (g *GameLogic) PlantCard(player *clients.Player, request *messages.RequestC
 		Payload: &messages.InGameOperation_CardPlant{
 			CardPlant: plantOp,
 		},
-		ProcessFrameId: request.Base.ProcessFrameId,
+		ProcessFrameId:      request.Base.ProcessFrameId,
+		ResponseClientOpSeq: request.Base.ClientOpSeq,
 	}
 }
 
@@ -79,7 +80,8 @@ func (g *GameLogic) RemoveCard(player *clients.Player, request *messages.Request
 		Payload: &messages.InGameOperation_RemovePlant{
 			RemovePlant: removeOp,
 		},
-		ProcessFrameId: request.Base.ProcessFrameId,
+		ProcessFrameId:      request.Base.ProcessFrameId,
+		ResponseClientOpSeq: request.Base.ClientOpSeq,
 	}
 }
 
@@ -111,6 +113,7 @@ func (g *GameLogic) UseStarShards(player *clients.Player, request *messages.Requ
 		Payload: &messages.InGameOperation_UseStarShards{
 			UseStarShards: starshardsOp,
 		},
-		ProcessFrameId: request.Base.ProcessFrameId,
+		ProcessFrameId:      request.Base.ProcessFrameId,
+		ResponseClientOpSeq: request.Base.ClientOpSeq,
 	}
 }

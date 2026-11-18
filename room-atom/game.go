@@ -4,6 +4,7 @@ package roomatom
 // GameLogic 结构体、ProcessFrame、EnqueueAction、游戏相关方法
 
 import (
+	"fmt"
 	"log"
 	"mvzserver/constants"
 	messages "mvzserver/messages/pb"
@@ -11,11 +12,16 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"google.golang.org/protobuf/proto"
 )
 
 const (
 	maxResendPerSync uint32 = 32
 	maxHistoryFrames uint32 = 600
+	// 服务端最多领先“双方都已 ACK 的 committed frame”多少帧。
+	// 生成帧可以适度领先以吸收网络抖动，但不能无限领先后裁掉未确认历史。
+	maxSpeculativeLeadFrames uint32 = 120
 )
 
 const maxOperationUID uint32 = ^uint32(0)
@@ -76,7 +82,55 @@ func (room *Room) currentServerFrameID() uint32 {
 	return nextFrameID - 1
 }
 
+// committedFrameID 是所有仍在房间内玩家都已 ACK 的最大连续帧。
+// 只有 committed frame 才能作为跨端摘要、checkpoint、结束仲裁的权威依据；
+// 服务端已生成但尚未被双方确认的帧只是 speculative frame。
+func (room *Room) committedFrameID() uint32 {
+	if room == nil || room.RoomCtx == nil {
+		return 0
+	}
+	current := room.currentServerFrameID()
+	if current == 0 {
+		return current
+	}
+
+	playerCount := 0
+	minAck := current
+	room.RoomCtx.Players.Range(func(_ int, player *Player) bool {
+		if player == nil || player.Ctx == nil {
+			return true
+		}
+		// 断线玩家不会继续 ACK；权威帧只要求仍在线双方确认。
+		// 断线席位由重连宽限期处理，重连后再从 checkpoint 补齐。
+		if player.Ctx.State == constants.PlayerStateDisconnected {
+			return true
+		}
+		playerCount++
+		ack := player.Ctx.LatestAckFrameID.Load()
+		if ack < minAck {
+			minAck = ack
+		}
+		return true
+	})
+	// 测试/空房间没有 ACK 来源时，退回当前生成帧，避免辅助函数不可用。
+	if playerCount == 0 {
+		return current
+	}
+	if minAck > current {
+		return current
+	}
+	return minAck
+}
+
 func (room *Room) resetInGameState() {
+	startDesyncLog(room.ID)
+	recordDesyncEvent(room.ID, "game_start", map[string]any{
+		"seed":      room.Seed,
+		"chapterId": room.ChapterID,
+		"stageId":   room.StageID,
+		"players":   room.playerSyncSnapshot(),
+		"loadouts":  room.canonicalPlayerLoadouts(),
+	})
 	room.RoomCtx.NextFrameID.Store(1)
 	room.scheduledFrames = make(map[uint32]*FrameSubmission)
 	room.frameHistory = make(map[uint32]*messages.InGameResponse)
@@ -87,8 +141,10 @@ func (room *Room) resetInGameState() {
 	room.pendingEndFrame = 0
 	room.EndGameGraceActive = false
 	room.EndGameFrameID = 0
+	room.EndGameResult = 0
 	room.FrameHashes = make(map[uint32]map[int]uint32)
 	room.DesyncDetected = false
+	room.HashSchemaMismatch = false
 	room.ResyncNotified = make(map[int]struct{})
 	room.Checkpoints = make(map[uint32]*stateCheckpoint)
 	room.LastCheckpointFrame = 0
@@ -113,6 +169,18 @@ func (room *Room) ensureFrameSubmission(frameID uint32) *FrameSubmission {
 
 func (room *Room) recordOperationSubmission(frameID uint32, operation *messages.InGameOperation) {
 	if operation == nil {
+		return
+	}
+	// 帧一旦生成就不可再写入：权威帧内容必须对所有客户端一致，
+	// 否则同一操作会在不同端落到不同逻辑帧，回滚也无法修复。
+	if frameID <= room.currentServerFrameID() {
+		log.Printf("⚠️ 拒绝写入已生成帧 room=%d frame=%d current=%d",
+			room.ID, frameID, room.currentServerFrameID())
+		recordDesyncEvent(room.ID, "late_operation_rejected", map[string]any{
+			"frameId":   frameID,
+			"current":   room.currentServerFrameID(),
+			"operation": describeInGameOperations([]*messages.InGameOperation{operation}),
+		})
 		return
 	}
 
@@ -206,7 +274,15 @@ func (room *Room) advanceOneFrame() {
 	submission := room.scheduledFrames[frameID]
 	operations := make([]*messages.InGameOperation, 0)
 	if submission != nil {
-		operations = append(operations, submission.Operations...)
+		// 写进历史帧的必须是副本：调用方仍可能持有同一 proto 指针，
+		// 任何后续改动都不得回溯改写已经广播过的权威帧。
+		for _, operation := range submission.Operations {
+			cloned, ok := proto.Clone(operation).(*messages.InGameOperation)
+			if !ok || cloned == nil {
+				continue
+			}
+			operations = append(operations, cloned)
+		}
 		sort.SliceStable(operations, func(i, j int) bool {
 			return room.lessInGameOperation(operations[i], operations[j])
 		})
@@ -220,6 +296,14 @@ func (room *Room) advanceOneFrame() {
 	room.frameHistory[frameID] = &messages.InGameResponse{
 		FrameId:    frameID,
 		Operations: operations,
+	}
+	if len(operations) > 0 || shouldLogFrameDetail(frameID) {
+		recordDesyncEvent(room.ID, "authoritative_frame", map[string]any{
+			"frameId":          frameID,
+			"committedFrameId": room.committedFrameID(),
+			"operations":       describeInGameOperations(operations),
+			"players":          room.playerSyncSnapshot(),
+		})
 	}
 	delete(room.scheduledFrames, frameID)
 	room.Logic.ReleaseFrame(frameID)
@@ -284,6 +368,14 @@ func (room *Room) syncClientFrames(player *Player, forceResend bool) {
 		if !ok {
 			continue
 		}
+		if len(response.Operations) > 0 || shouldLogFrameDetail(frameID) {
+			recordDesyncEvent(room.ID, "send_frame", map[string]any{
+				"playerId":       player.Ctx.Id,
+				"frameId":        frameID,
+				"operationCount": len(response.Operations),
+				"ackFrameId":     ackFrameID,
+			})
+		}
 		room.RoomCtx.SendMessageToUserByPlayer(response, player)
 	}
 	if toFrameID > player.LastSyncedFrameID.Load() {
@@ -327,29 +419,28 @@ func (room *Room) pruneFrameHistory() {
 		return
 	}
 
-	serverFrameID := room.currentServerFrameID()
-	minAckFrameID := serverFrameID
-	if room.GetPlayerCount() > 0 {
-		minAckFrameID = ^uint32(0)
-		room.RoomCtx.Players.Range(func(_ int, player *Player) bool {
-			if player == nil || player.Ctx == nil {
-				return true
-			}
-			ackFrameID := player.Ctx.LatestAckFrameID.Load()
-			if ackFrameID < minAckFrameID {
-				minAckFrameID = ackFrameID
-			}
-			return true
-		})
+	// 只删除双方都已经 ACK 的帧。未 committed 的帧即使超过时间窗口也必须保留，
+	// 否则落后的客户端会被迫跳过缺失帧，随后所有操作都在错误帧落地。
+	committed := room.committedFrameID()
+	minAckFrameID := committed
+	// 已确认 checkpoint 之后的历史必须保留：重连时客户端会先恢复到 checkpoint，
+	// 再重放 checkpoint+1..current。若把这些帧当普通已 ACK 帧裁掉，重连必丢操作。
+	if room.LastCheckpointFrame == 0 {
+		// 第一个 checkpoint 之前没有可恢复快照，必须保留全部历史供重连。
+		minAckFrameID = 0
+	} else if room.LastCheckpointFrame < minAckFrameID {
+		minAckFrameID = room.LastCheckpointFrame
 	}
-
 	for frameID := range room.frameHistory {
-		tooOldForAck := frameID <= minAckFrameID
-		tooOldForWindow := serverFrameID > maxHistoryFrames && frameID <= serverFrameID-maxHistoryFrames
-		if tooOldForAck || tooOldForWindow {
+		if frameID <= minAckFrameID {
 			delete(room.frameHistory, frameID)
 			room.Logic.ReleaseFrame(frameID)
 		}
+	}
+
+	if room.currentServerFrameID() > committed+maxHistoryFrames {
+		log.Printf("⚠️ 房间 %d 未确认帧积压 %d 帧（committed=%d current=%d），等待客户端 ACK",
+			room.ID, room.currentServerFrameID()-committed, committed, room.currentServerFrameID())
 	}
 }
 
@@ -400,7 +491,47 @@ func (room *Room) acceptInGameBase(player *Player, req *messages.RequestBlank) b
 		return false
 	}
 
-	player.Ctx.UpdatePlayerFrame(req.FrameId, req.AckFrameId)
+	// ACK 只能指向服务端已经生成的帧。否则一个异常/伪造的 ACK 会把
+	// committedFrameID 推到未来，让尚未真正被该客户端执行的帧被当成权威帧。
+	serverFrame := room.currentServerFrameID()
+	frameID := req.FrameId
+	ackFrameID := req.AckFrameId
+	clamped := false
+	if frameID > serverFrame {
+		frameID = serverFrame
+		clamped = true
+	}
+	// ACK 不能超过客户端自报的进度帧：前者表示“已执行”，后者表示“已收到”。
+	// 否则一个异常客户端可以只上报 frame=10、ack=99，把 committed 直接推到未来。
+	if ackFrameID > frameID {
+		ackFrameID = frameID
+		clamped = true
+	}
+	if clamped {
+		recordDesyncEvent(room.ID, "frame_progress_clamped", map[string]any{
+			"playerId":          player.Ctx.Id,
+			"requestedFrameId":  req.FrameId,
+			"requestedAckFrame": req.AckFrameId,
+			"acceptedFrameId":   frameID,
+			"acceptedAckFrame":  ackFrameID,
+			"serverFrame":       serverFrame,
+		})
+	}
+	player.Ctx.UpdatePlayerFrame(frameID, ackFrameID)
+	player.Ctx.StateHashVersion.Store(req.StateHashVersion)
+	player.Ctx.StateHashVersionReported.Store(true)
+	if shouldLogFrameDetail(req.FrameId) || req.HashFrameId != 0 {
+		recordDesyncEvent(room.ID, "blank", map[string]any{
+			"playerId":         player.Ctx.Id,
+			"frameId":          req.FrameId,
+			"ackFrameId":       req.AckFrameId,
+			"hashFrameId":      req.HashFrameId,
+			"stateHash":        fmt.Sprintf("%08x", req.StateHash),
+			"stateHashHex":     req.StateHashHex,
+			"stateHashVersion": req.StateHashVersion,
+		})
+	}
+	room.checkHashSchemaVersions()
 	if req.HashFrameId != 0 && req.StateHash != 0 {
 		room.recordStateHash(player, req.HashFrameId, req.StateHash)
 	}
@@ -408,9 +539,80 @@ func (room *Room) acceptInGameBase(player *Player, req *messages.RequestBlank) b
 	return true
 }
 
+// checkHashSchemaVersions 拒绝新旧客户端混用：
+// 旧客户端把本机卡槽等字段算进 hash，新客户端已把这些字段移出，
+// 两端从第 1 帧起 hash 就不同。必须先报版本不一致，而不是报状态分叉。
+func (room *Room) checkHashSchemaVersions() {
+	if room == nil || room.HashSchemaMismatch {
+		return
+	}
+	type versionEntry struct {
+		PlayerID         int    `json:"playerId"`
+		StateHashVersion uint32 `json:"stateHashVersion"`
+	}
+	entries := make([]versionEntry, 0, 2)
+	room.RoomCtx.Players.Range(func(_ int, player *Player) bool {
+		// 只统计真正发送过心跳的客户端。重连后的新上下文可能已经带有
+		// checkpoint 帧号，但尚未上报版本；不能把默认值 0 当成旧版本。
+		if player == nil || player.Ctx == nil || !player.Ctx.StateHashVersionReported.Load() {
+			return true
+		}
+		entries = append(entries, versionEntry{
+			PlayerID:         player.Ctx.Id,
+			StateHashVersion: player.Ctx.StateHashVersion.Load(),
+		})
+		return true
+	})
+	if len(entries) < 2 {
+		return
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].PlayerID < entries[j].PlayerID })
+	firstVersion := entries[0].StateHashVersion
+	mismatch := false
+	parts := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		parts = append(parts, fmt.Sprintf("%d:%d", entry.PlayerID, entry.StateHashVersion))
+		if entry.StateHashVersion != firstVersion {
+			mismatch = true
+		}
+	}
+	if !mismatch {
+		return
+	}
+
+	room.HashSchemaMismatch = true
+	versionText := strings.Join(parts, ",")
+	log.Printf("🚨 客户端哈希口径版本不一致 versions=%s，停止状态哈希比较", versionText)
+	recordDesyncEvent(room.ID, "client_version_mismatch", map[string]any{
+		"versions": entries,
+		"players":  room.playerSyncSnapshot(),
+	})
+	room.RoomCtx.BroadcastMessage(&messages.RoomResponse{
+		Payload: &messages.RoomResponse_Error{
+			Error: &messages.ResponseErrorMessage{
+				Message: "检测到客户端版本不一致（" + versionText +
+					"），请刷新或更新所有客户端后再开始游戏",
+			},
+		},
+	}, nil)
+}
+
 // recordStateHash 汇总同一帧各客户端的状态摘要，不一致即判定分叉并广播止损。
 func (room *Room) recordStateHash(player *Player, frameID uint32, hash uint32) {
 	if player == nil || player.Ctx == nil || frameID == 0 || hash == 0 {
+		return
+	}
+	if frameID > room.currentServerFrameID() {
+		// 客户端还不能对尚未生成的帧给出权威摘要。
+		recordDesyncEvent(room.ID, "state_hash_future_frame_rejected", map[string]any{
+			"playerId":    player.Ctx.Id,
+			"frameId":     frameID,
+			"serverFrame": room.currentServerFrameID(),
+		})
+		return
+	}
+	// 新旧客户端混用时 hash 口径不同，不能据此判定游戏状态分叉。
+	if room.HashSchemaMismatch {
 		return
 	}
 	if room.FrameHashes == nil {
@@ -422,33 +624,19 @@ func (room *Room) recordStateHash(player *Player, frameID uint32, hash uint32) {
 		room.FrameHashes[frameID] = hashes
 	}
 	hashes[player.Ctx.Id] = hash
+	recordDesyncEvent(room.ID, "state_hash", map[string]any{
+		"playerId":         player.Ctx.Id,
+		"frameId":          frameID,
+		"hash":             fmt.Sprintf("%08x", hash),
+		"committedFrameId": room.committedFrameID(),
+		"players":          room.playerSyncSnapshot(),
+	})
 
-	if len(hashes) >= 2 {
-		var first uint32
-		hasFirst := false
-		mismatch := false
-		for _, value := range hashes {
-			if !hasFirst {
-				first = value
-				hasFirst = true
-				continue
-			}
-			if value != first {
-				mismatch = true
-			}
-		}
-		if mismatch && !room.DesyncDetected {
-			room.DesyncDetected = true
-			log.Printf("🚨 检测到状态分叉 frame=%d hashes=%v", frameID, hashes)
-			resp := &messages.RoomResponse{
-				Payload: &messages.RoomResponse_Error{
-					Error: &messages.ResponseErrorMessage{
-						Message: "检测到客户端状态分叉（frame=" + strconv.FormatUint(uint64(frameID), 10) + "），本局已标记为异常",
-					},
-				},
-			}
-			room.RoomCtx.BroadcastMessage(resp, nil)
-		}
+	// 只有双方都已 ACK 的帧才是权威帧。未 committed 的摘要先缓存，
+	// 等 committed 推进到该帧后再比较，避免“一端先到 frame N”就提前判分叉。
+	committed := room.committedFrameID()
+	if committed > 0 && frameID <= committed {
+		room.evaluateStateHash(frameID)
 	}
 
 	// 只保留最近 64 帧的摘要，避免长期增长
@@ -459,6 +647,73 @@ func (room *Room) recordStateHash(player *Player, frameID uint32, hash uint32) {
 			}
 		}
 	}
+}
+
+// evaluateCommittedStateHashes 在 committed 推进后，比较所有已经双端确认的摘要。
+func (room *Room) evaluateCommittedStateHashes(committed uint32) {
+	if len(room.FrameHashes) == 0 {
+		return
+	}
+	for frameID := range room.FrameHashes {
+		if frameID <= committed {
+			room.evaluateStateHash(frameID)
+		}
+	}
+	// 已确认帧的摘要比较完就删；单端缺失的旧摘要也要清理，避免永久占用。
+	for frameID := range room.FrameHashes {
+		if committed > 64 && frameID+64 < committed {
+			delete(room.FrameHashes, frameID)
+		}
+	}
+}
+
+func (room *Room) evaluateStateHash(frameID uint32) {
+	hashes := room.FrameHashes[frameID]
+	if len(hashes) < 2 {
+		return
+	}
+
+	var first uint32
+	hasFirst := false
+	mismatch := false
+	for _, value := range hashes {
+		if !hasFirst {
+			first = value
+			hasFirst = true
+			continue
+		}
+		if value != first {
+			mismatch = true
+		}
+	}
+
+	// 无论一致与否，该帧已经完成双端比较，不再重复告警。
+	delete(room.FrameHashes, frameID)
+	if !mismatch || room.DesyncDetected {
+		return
+	}
+
+	room.DesyncDetected = true
+	hashText := formatFrameHashes(hashes)
+	log.Printf("🚨 检测到状态分叉 frame=%d hashes=%s committed=%d", frameID, hashText, room.committedFrameID())
+	recordDesyncEvent(room.ID, "desync_detected", map[string]any{
+		"frameId":          frameID,
+		"hashes":           hashes,
+		"hashText":         hashText,
+		"committedFrameId": room.committedFrameID(),
+		"players":          room.playerSyncSnapshot(),
+		"frameHashes":      room.FrameHashes,
+		"recentFrames":     room.describeRecentFrames(frameID, 30),
+	})
+	resp := &messages.RoomResponse{
+		Payload: &messages.RoomResponse_Error{
+			Error: &messages.ResponseErrorMessage{
+				Message: "检测到客户端状态分叉（frame=" + strconv.FormatUint(uint64(frameID), 10) +
+					"，hashes=" + hashText + "），本局已标记为异常",
+			},
+		},
+	}
+	room.RoomCtx.BroadcastMessage(resp, nil)
 }
 
 const endGameVoteTimeout = 3 * time.Second
@@ -552,13 +807,16 @@ func (room *Room) scheduleAuthoritativeEnd() {
 	room.recordOperationSubmission(endFrame, event)
 	room.pendingEndFrame = endFrame
 	room.EndGameFrameID = endFrame
+	// 结果在此定稿：权威帧事件和最终结算广播必须使用同一个值。
+	room.EndGameResult = result
 	log.Printf("🏁 权威结束事件排入帧 %d，结果=%d，房间=%d", endFrame, result, room.ID)
 }
 
 // tickEndGameArbitration 在每次 tick 中推进投票超时与结束帧落地。
 func (room *Room) tickEndGameArbitration() {
 	if room.pendingEndFrame != 0 {
-		if room.currentServerFrameID() >= room.pendingEndFrame {
+		// 结束帧也必须双方 ACK 后才算权威落地；生成到该帧不代表客户端已经执行。
+		if room.committedFrameID() >= room.pendingEndFrame {
 			room.enterPostGameAfterEndFrame()
 		}
 		return
@@ -580,7 +838,9 @@ func (room *Room) enterPostGameAfterEndFrame() {
 	}
 	// 不立即 resetInGameState：保留历史帧，供落后客户端补齐到结束帧后再自行结束。
 	room.EndGameGraceActive = true
-	result, _ := room.decideEndGameResult()
+	// 使用权威帧定稿时缓存的结果，而不是重新计算：掉线宽限可能已把 EndGameVotes
+	// 覆写为判负，重算会让结算包与权威结束帧里的结果矛盾。
+	result := room.EndGameResult
 	room.RoomCtx.BroadcastMessage(&messages.RoomResponse{
 		Payload: &messages.RoomResponse_GameEnd{
 			GameEnd: &messages.ResponseGameEnd{
@@ -601,9 +861,25 @@ func (room *Room) runGameTick() {
 	}
 
 	room.LastActiveTime = time.Now() // 更新最后活动时间
+	committed := room.committedFrameID()
+	current := room.currentServerFrameID()
+	if current > 0 && current >= committed+maxSpeculativeLeadFrames {
+		// 客户端已经落后一个安全窗口：停止生成新帧，只补发与等待 ACK。
+		// 这样未确认的历史帧不会被裁剪，客户端也不会跳过缺失帧。
+		room.syncAllClients(false)
+		room.evaluateCommittedStateHashes(committed)
+		room.tryAcceptCommittedCheckpoints(committed)
+		room.tickEndGameArbitration()
+		room.tickReconnectGrace()
+		return
+	}
+
 	room.advanceOneFrame()
 	room.pruneFrameHistory()
 	room.syncAllClients(false)
+	committed = room.committedFrameID()
+	room.evaluateCommittedStateHashes(committed)
+	room.tryAcceptCommittedCheckpoints(committed)
 	room.tickEndGameArbitration()
 	// 断线宽限期检查：超时判负由权威结束帧统一落地
 	room.tickReconnectGrace()

@@ -1,6 +1,7 @@
 package roomatom
 
 import (
+	"encoding/base64"
 	"log"
 	"mvzserver/clients"
 	"mvzserver/constants"
@@ -193,19 +194,36 @@ func (room *Room) handleReconnect(request *ReconnectRequest) {
 	// 其他阶段（大厅/选卡/加载）：直接重新入座并同步当前房间状态。
 	if room.GameStage.EqualTo(constants.STAGE_InGame) {
 		newCtx := clients.NewClientCtx(request.Conn, request.PlayerID)
-		newCtx.LatestFrameID.Store(target.Ctx.LatestFrameID.Load())
-		newCtx.LatestAckFrameID.Store(target.Ctx.LatestAckFrameID.Load())
+		// 新的连接上下文从保守的权威帧开始：
+		// - 有 checkpoint：从 checkpoint 帧恢复后重放 checkpoint+1..；
+		// - 无 checkpoint：从 0 或最早历史帧开始重放完整历史。
+		//
+		// 不能直接继承旧上下文的 ACK。页面刷新后的新客户端尚未执行任何帧，
+		// 继承旧 ACK 会让服务端把“新客户端没跑过的帧”当成双方已确认的权威帧，
+		// 从而提前比较摘要/裁剪历史。
+		//
+		// 同进程重连的客户端会在 socket open 后立刻发送自己的当前 ACK，
+		// UpdatePlayerFrame 是单调的，会把它真实执行到的帧重新抬上去。
+		resumeFrame := room.LastCheckpointFrame
+		resumeProgressFrame := room.LastCheckpointFrame
+		newCtx.LatestFrameID.Store(resumeProgressFrame)
+		newCtx.LatestAckFrameID.Store(resumeFrame)
+		newCtx.StateHashVersion.Store(target.Ctx.StateHashVersion.Load())
+		newCtx.StateHashVersionReported.Store(target.Ctx.StateHashVersionReported.Load())
 		newCtx.State = constants.PlayerStateConnected
 
 		oldCtx := target.Ctx
 		target.Ctx = newCtx
+		target.LastSyncedFrameID.Store(resumeProgressFrame)
 		target.ConnectionEpoch++
 		if oldCtx.IsConnected() {
 			oldCtx.Close()
 		}
 
-		log.Printf("🟢 玩家 %d 重连成功，从帧 %d 继续", request.PlayerID, newCtx.LatestAckFrameID.Load())
+		log.Printf("🟢 玩家 %d 重连成功，从 checkpoint=%d 继续", request.PlayerID, resumeFrame)
 		room.onPlayerReconnected(target)
+		// 页面刷新/新场景需要种子与 loadout；随后 roomAllSync 会把阶段切回 InGame。
+		room.sendAllReadyTo(target)
 		room.sendReplayFromCheckpoint(target)
 		room.sendRoomAllSyncTo(target)
 	} else {
@@ -264,6 +282,11 @@ func (room *Room) handlePlayerMessage(msg *PlayerMessage) {
 	// 2. 反序列化 (解码) 收到的二进制数据
 	if err := proto.Unmarshal(msg.Data, &request); err != nil {
 		log.Printf("Failed to unmarshal request: %v", err)
+		recordDesyncEvent(room.ID, "request_unmarshal_failed", map[string]any{
+			"playerId":  msg.Player.GetID(),
+			"error":     err.Error(),
+			"rawBase64": base64.StdEncoding.EncodeToString(msg.Data),
+		})
 		return
 	}
 
@@ -271,6 +294,18 @@ func (room *Room) handlePlayerMessage(msg *PlayerMessage) {
 	if request.Payload == nil {
 		log.Printf("🔴 Request payload is nil for player %d", msg.Player.GetID())
 		return
+	}
+
+	if shouldLogRequest(&request) {
+		fields := map[string]any{
+			"playerId": msg.Player.GetID(),
+			"payload":  describeRequest(&request),
+			"stage":    room.GameStage.Load(),
+			"players":  room.playerSyncSnapshot(),
+			// 原始字节主要用于离线复现异常帧；只有被采样的 blank 或非心跳请求会走到这里。
+			"rawBase64": base64.StdEncoding.EncodeToString(msg.Data),
+		}
+		recordDesyncEvent(room.ID, "request", fields)
 	}
 
 	switch payload := request.Payload.(type) {
@@ -542,6 +577,13 @@ func (room *Room) HandleRequestPlayerLoaded(player *Player, req *messages.Reques
 	if progress > player.LoadProgress {
 		player.LoadProgress = progress
 	}
+	recordDesyncEvent(room.ID, "player_loaded", map[string]any{
+		"playerId":     player.Ctx.Id,
+		"progress":     progress,
+		"loadProgress": player.LoadProgress,
+		"isLoaded":     player.IsLoaded,
+		"players":      room.playerSyncSnapshot(),
+	})
 	if player.LoadProgress >= 100 {
 		player.IsLoaded = true
 	}
@@ -564,7 +606,8 @@ func (room *Room) HandleRequestBlank(player *Player, req *messages.RequestBlank)
 		player.Ctx.UpdatePlayerFrame(req.FrameId, req.AckFrameId)
 	}
 	room.pruneFrameHistory()
-	room.sendReplayFromCheckpoint(player)
+	// 心跳只做增量补发。ReplayFrames 只应在重连时发送一次；
+	// 每个 blank 都重放 checkpoint 之后的全部帧会把客户端缓冲打满并造成丢帧。
 	room.syncAllClients(true)
 	return true
 }

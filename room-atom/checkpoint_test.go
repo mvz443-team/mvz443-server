@@ -42,6 +42,28 @@ func TestCheckpointMismatchIsIgnored(t *testing.T) {
 	}
 }
 
+func TestReplayRangeUsesServerFrameNotCommitted(t *testing.T) {
+	// 场景：checkpoint=200，服务端已推进到 350，重连端 ACK 被重置到 200，
+	// 此时 committed=200。回放必须从 201 到 350，而不是空区间。
+	room := newTestRoom(350)
+	room.LastCheckpointFrame = 200
+
+	from, to := room.replayFrameRange(200)
+	if from != 201 || to != 350 {
+		t.Fatalf("回放区间应为 [201,350]，得到 [%d,%d]（若 to=committed=200 则回放为空，客户端会冻结）", from, to)
+	}
+
+	// 无 checkpoint 时从最早历史帧开始，但仍以服务端最新帧为上界。
+	room.frameHistory = map[uint32]*messages.InGameResponse{}
+	for f := uint32(180); f <= 350; f++ {
+		room.frameHistory[f] = &messages.InGameResponse{FrameId: f}
+	}
+	from, to = room.replayFrameRange(0)
+	if from != 180 || to != 350 {
+		t.Fatalf("无 checkpoint 时回放区间应为 [180,350]，得到 [%d,%d]", from, to)
+	}
+}
+
 func TestReplayIncludesAcceptedCheckpointSnapshot(t *testing.T) {
 	room := newTestRoom(200)
 	room.Checkpoints = make(map[uint32]*stateCheckpoint)

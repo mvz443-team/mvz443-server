@@ -60,15 +60,22 @@ type Room struct {
 	pendingEndFrame    uint32
 	EndGameGraceActive bool
 	EndGameFrameID     uint32
+	// 结束结果在写入权威帧时定稿。此后掉线宽限等流程可能覆写 EndGameVotes，
+	// 广播结算必须使用这里缓存的结果，否则权威帧里的“胜”和结算包的“负”
+	// 会让客户端先后收到矛盾的两个 gameEnd。
+	EndGameResult uint32
 
 	// 分叉检测：frameID -> playerID -> state hash
 	FrameHashes    map[uint32]map[int]uint32
 	DesyncDetected bool
+	// 客户端哈希口径版本不一致时置位：此时禁止再比较 hash，否则会把
+	// “新旧客户端混用”误报成游戏状态分叉。
+	HashSchemaMismatch bool
 	// 已通知重同步（帧缺口）的玩家，避免重复下发
 	ResyncNotified map[int]struct{}
 
 	// 双端确认的低频权威检查点；重连后从该帧之后回放历史操作。
-	Checkpoints          map[uint32]*stateCheckpoint
+	Checkpoints         map[uint32]*stateCheckpoint
 	LastCheckpointFrame uint32
 
 	// InGame 断线席位管理：掉线时刻与宽限期截止时刻。
@@ -175,6 +182,7 @@ func (room *Room) Destroy() {
 	room.destroyOnce.Do(func() {
 		log.Printf("🔥 Destroying room %d (stage: %d, players: %d, idle time: %v)",
 			room.ID, room.GameStage.Load(), room.GetPlayerCount(), time.Since(room.LastActiveTime))
+		stopDesyncLog(room.ID)
 
 		// 先通知 Run 主循环退出；Destroy 幂等，Run 的 defer 再调用时不会重复关闭。
 		if room.done != nil {

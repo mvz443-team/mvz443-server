@@ -71,6 +71,18 @@ func (room *Room) tickReconnectGrace() {
 		return
 	}
 	log.Printf("⌛ 房间 %d 重连宽限期超时，仍有玩家掉线，按异常对局判负", room.ID)
+	// 掉线玩家不会再 ACK。宽限期结束后把他们推进到当前生成帧，
+	// 否则 committed frame 会永久停住，权威结束帧也无法落地。
+	currentFrame := room.currentServerFrameID()
+	room.RoomCtx.Players.Range(func(_ int, player *Player) bool {
+		if player == nil || player.Ctx == nil {
+			return true
+		}
+		if player.Ctx.LatestAckFrameID.Load() < currentFrame {
+			player.Ctx.LatestAckFrameID.Store(currentFrame)
+		}
+		return true
+	})
 	// 直接复用 end_game 仲裁：标记全体玩家投“判负”，立即排入权威结束帧
 	room.RoomCtx.Players.Range(func(_ int, player *Player) bool {
 		if player == nil || player.Ctx == nil {
@@ -106,6 +118,11 @@ func (room *Room) startInGameFromLoading() bool {
 	}
 	room.resetInGameState()
 	room.GameStage.Store(constants.STAGE_InGame)
+	recordDesyncEvent(room.ID, "all_sync", map[string]any{
+		"seed":     room.Seed,
+		"players":  room.playerSyncSnapshot(),
+		"loadouts": room.canonicalPlayerLoadouts(),
+	})
 	room.broadcastRoomAllSync()
 	room.RoomCtx.StartGameTicker()
 	log.Printf("🟢 房间 %d 全员加载完成，广播 roomAllSync 并启动 ticker", room.ID)

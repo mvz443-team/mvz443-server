@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"log"
 	"mvzserver/handlers"
+	roomatom "mvzserver/room-atom"
 	roommanager "mvzserver/room-manager"
 	"mvzserver/utils"
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -78,6 +80,24 @@ func CreateFiberApp(cfg AppConfig, serverHandler *handlers.ServerHandler) (fapp 
 	// 客户端联机设置里的连通性与延时探测
 	fapp.Get("/ping", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"pong": time.Now().UnixMilli()})
+	})
+	// TEMP-DESYNC-LOG: 下载房间级全量诊断日志。
+	fapp.Get("/debug/desync-log", func(c *fiber.Ctx) error {
+		roomID, err := strconv.Atoi(c.Query("room"))
+		if err != nil || roomID <= 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid room id"})
+		}
+		data, err := roomatom.ReadDesyncLog(roomID)
+		if err != nil {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"error":  "desync log not found",
+				"roomId": roomID,
+				"detail": err.Error(),
+			})
+		}
+		c.Set("Content-Type", "application/x-ndjson; charset=utf-8")
+		c.Set("Content-Disposition", fmt.Sprintf("attachment; filename=desync-room-%d.jsonl", roomID))
+		return c.Send(data)
 	})
 
 	listenAddr := net.JoinHostPort(cfg.Host, cfg.Port)
