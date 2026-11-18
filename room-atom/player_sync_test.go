@@ -198,3 +198,34 @@ func TestUserMembershipAndPermanentLeave(t *testing.T) {
 		t.Fatal("最后一人退出后房间应销毁")
 	}
 }
+
+// 放弃重连/主动退房后，旧房间必须立刻不可查：否则前端“开始游戏”
+// 会读到一个实际上已经不能恢复的房间席位，导致无法重新开房/初始化。
+func TestPermanentLeaveClearsMembershipEvenWhenRoomSurvives(t *testing.T) {
+	stopChan := make(chan int, 1)
+	room := NewRoom(18, stopChan)
+	room.Name = "test"
+	room.GameStage.Store(constants.STAGE_InGame)
+	owner := connectedPlayer(100)
+	owner.Name = "owner"
+	owner.JoinKey = "k"
+	guest := connectedPlayer(101)
+	guest.Name = "guest"
+	room.RoomCtx.Players.Store(100, owner)
+	room.RoomCtx.Players.Store(101, guest)
+
+	reply := make(chan bool, 1)
+	room.handleLeaveUser(&LeaveUserRequest{
+		Identity: LeaveIdentity{UserName: "guest", RoomID: 18},
+		Reply:    reply,
+	})
+	if !<-reply {
+		t.Fatal("永久退出应成功")
+	}
+	if room.FindMembershipByName("guest") != nil {
+		t.Fatal("退出后昵称不应再对应房间席位")
+	}
+	if room.FindMembershipByName("owner") == nil {
+		t.Fatal("退出方不应影响其他仍在房间内的玩家")
+	}
+}

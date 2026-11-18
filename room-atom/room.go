@@ -214,6 +214,11 @@ func (room *Room) Destroy() {
 		// 通知房间关闭, 通过游戏状态来做
 		room.GameStage.Store(constants.STAGE_CLOSED)
 
+		// 立即清空席位与待处理重连请求：否则新玩家仍可按旧昵称/房间号查到
+		// 已关闭房间，或把延迟到达的重连请求绑定到刚刚销毁的席位上。
+		room.pendingRecoveries = make(map[uint32]*pendingRecovery)
+		room.RoomCtx.Players.Clear()
+
 		// 清空各个存储
 
 		// 房间

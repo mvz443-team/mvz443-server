@@ -55,6 +55,14 @@ type ClientCtx struct {
 	State constants.PlayerState // 当前状态（在线/断线），房间主循环独占写
 }
 
+// SetWriterForTest 替换连接写通道；仅用于单元测试捕获出站消息。
+func (c *ClientCtx) SetWriterForTest(w *ConnWriter) {
+	if c == nil {
+		return
+	}
+	c.writer = w
+}
+
 // NewClientCtx 创建客户端上下文并启动异步写 goroutine。
 func NewClientCtx(conn *websocket.Conn, id int) *ClientCtx {
 	ctx := &ClientCtx{

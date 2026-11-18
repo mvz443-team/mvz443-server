@@ -27,6 +27,13 @@ func (pm *PlayerMap) Delete(key int) {
 	pm.m.Delete(key)
 }
 
+func (pm *PlayerMap) Clear() {
+	pm.m.Range(func(key, _ interface{}) bool {
+		pm.m.Delete(key)
+		return true
+	})
+}
+
 func (pm *PlayerMap) Range(f func(key int, value *clients.Player) bool) {
 	pm.m.Range(func(k, v interface{}) bool {
 		ki, ok1 := k.(int)

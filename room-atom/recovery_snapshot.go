@@ -110,25 +110,28 @@ func (room *Room) HandleRequestSnapshotResponse(player *Player, req *messages.Re
 			player.Ctx.Id, req.FrameId, req.RequestId)
 		return
 	}
-	frames, ok := room.recoveryReplayFrames(req.FrameId)
+	// inline 快照已经包含 req.FrameId 这一帧执行后的状态；补帧必须从下一帧
+	// 开始，否则该帧的种植/技能操作会在重连端重复执行，立刻产生 desync。
+	frames, ok := room.recoveryReplayFrames(req.FrameId + 1)
 	if !ok {
 		log.Printf("⚠️ 房间 %d 无法把快照 frame=%d 转发给玩家 %d（历史帧缺口）",
 			room.ID, req.FrameId, target.Ctx.Id)
 		return
 	}
+	fromFrame := req.FrameId + 1
 	room.RoomCtx.SendMessageToUserByPlayer(&messages.RoomResponse{
 		Payload: &messages.RoomResponse_ReplayFrames{
 			ReplayFrames: &messages.ResponseReplayFrames{
 				Frames:             frames,
-				FromFrameId:        req.FrameId,
-				ToFrameId:          req.FrameId + uint32(len(frames)) - 1,
+				FromFrameId:        fromFrame,
+				ToFrameId:          fromFrame + uint32(len(frames)) - 1,
 				CheckpointFrameId:  req.FrameId,
 				InlineSnapshotJson: req.InlineSnapshotJson,
 			},
 		},
 	}, target)
-	log.Printf("📸 房间 %d 已把快照 frame=%d 转发给玩家 %d，并补齐 %d 帧",
-		room.ID, req.FrameId, target.Ctx.Id, len(frames))
+	log.Printf("📸 房间 %d 已把快照 frame=%d 转发给玩家 %d，并补齐 %d 帧（%d..）",
+		room.ID, req.FrameId, target.Ctx.Id, len(frames), fromFrame)
 }
 
 // recoveryReplayFrames 返回 [fromFrame, currentServerFrame] 的连续权威帧。

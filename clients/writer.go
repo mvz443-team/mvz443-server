@@ -34,6 +34,31 @@ type ConnWriter struct {
 	finished chan struct{}
 }
 
+// NewCapturingConnWriter 创建不依赖 WebSocket 的测试 writer，把 Send 内容写入 ch。
+// 仅用于单元测试断言房间向目标玩家发送了哪条消息。
+func NewCapturingConnWriter(ch chan []byte) *ConnWriter {
+	if ch == nil {
+		return nil
+	}
+	w := &ConnWriter{
+		queue:    make(chan []byte, outboundQueueSize),
+		done:     make(chan struct{}),
+		finished: make(chan struct{}),
+	}
+	go func() {
+		defer close(w.finished)
+		for {
+			select {
+			case <-w.done:
+				return
+			case data := <-w.queue:
+				ch <- data
+			}
+		}
+	}()
+	return w
+}
+
 // NewConnWriter 创建异步发送器并启动 writer goroutine。
 func NewConnWriter(id int, conn *websocket.Conn) *ConnWriter {
 	w := &ConnWriter{

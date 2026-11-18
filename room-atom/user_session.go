@@ -122,20 +122,14 @@ func (room *Room) handleLeaveUser(request *LeaveUserRequest) {
 	}
 
 	if target, ok := room.RoomCtx.Players.Load(leavingID); ok {
-		// 先广播“离线”房间信息，让仍在房间内的玩家看到该玩家状态变为 offline。
-		// 必须在关闭连接/删除席位之前发送，否则 buildPeersJSON 会跳过该玩家。
-		if request.DestroyRoom && target.Ctx != nil {
-			target.Ctx.State = constants.PlayerStateDisconnected
-			room.broadcastRoomInfo()
-		}
-		room.RoomCtx.SendMessageToUserByPlayer(&messages.RoomResponse{
+		// 主动退出时对退出方单播 roomClosed，不能先把它标成断线再广播：
+		// 那会让对方以为触发了“玩家掉线重连”，在房间取消后仍尝试重连。
+		leaveMessage := &messages.RoomResponse{
 			Payload: &messages.RoomResponse_RoomClosed{
 				RoomClosed: &messages.ResponseRoomClosed{Message: "你已退出游戏"},
 			},
-		}, target)
-		if target.Ctx != nil {
-			target.Ctx.Close()
 		}
+		room.RoomCtx.SendMessageToUserByPlayer(leaveMessage, target)
 	}
 	room.RoomCtx.DelUser(leavingID)
 	room.transferOwnerIfNeeded(leavingID)
@@ -147,6 +141,9 @@ func (room *Room) handleLeaveUser(request *LeaveUserRequest) {
 		room.Destroy()
 		replyLeave(request, true)
 		return
+	}
+	if target, ok := room.RoomCtx.Players.Load(leavingID); ok && target.Ctx != nil {
+		target.Ctx.Close()
 	}
 
 	if room.GetPlayerCount() == 0 {
