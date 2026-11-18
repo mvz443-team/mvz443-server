@@ -82,14 +82,18 @@ func (rm *RoomManager) FindUserRoom(name string) *roomatom.UserRoomMembership {
 	return found
 }
 
-// LeaveUserRoom 让昵称对应玩家永久退出其所在房间。
-func (rm *RoomManager) LeaveUserRoom(name string) bool {
-	if name == "" {
+// LeaveUserRoom 让指定玩家永久退出其所在房间。
+// destroyRoom=true 时同时取消整个房间（对局中主动退出）。
+func (rm *RoomManager) LeaveUserRoom(identity roomatom.LeaveIdentity, destroyRoom bool) bool {
+	if identity.UserName == "" {
 		return false
 	}
 	left := false
-	rm.rooms.Range(func(_ int, room *Room) bool {
-		if room.RequestLeaveUserByName(name) {
+	rm.rooms.Range(func(id int, room *Room) bool {
+		if identity.RoomID >= 0 && identity.RoomID != id {
+			return true
+		}
+		if room.RequestLeaveUser(identity, destroyRoom) {
 			left = true
 			return false
 		}

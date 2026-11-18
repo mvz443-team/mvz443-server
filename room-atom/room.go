@@ -214,7 +214,7 @@ func (room *Room) Destroy() {
 			room.RoomCtx.GameTicker = nil
 		}
 
-		room.RoomCtx.CloseAll()
+		room.RoomCtx.CloseGracefully()
 
 		// 最后通知房间管理器，移除我的引用（测试用房间可能没有 manager）
 		if room.StopChan != nil {

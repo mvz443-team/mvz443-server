@@ -80,6 +80,16 @@ func (c *ClientCtx) Close() {
 	})
 }
 
+// CloseGracefully 关闭写通道，但先把已入队的消息（如 roomClosed）写出去。
+func (c *ClientCtx) CloseGracefully() {
+	if c == nil || c.writer == nil {
+		return
+	}
+	c.closeOnce.Do(func() {
+		c.writer.CloseGracefully()
+	})
+}
+
 // Send 经写通道异步发送二进制消息；连接假死（队列满/已关）返回 false。
 func (c *ClientCtx) Send(data []byte) bool {
 	if c == nil || c.writer == nil {

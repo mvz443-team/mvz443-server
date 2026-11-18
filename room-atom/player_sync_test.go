@@ -133,6 +133,38 @@ func TestLastPlayerLeavingDestroysRoomImmediately(t *testing.T) {
 	}
 }
 
+func TestQuitGameDestroysRoomAndMarksPeerOffline(t *testing.T) {
+	stopChan := make(chan int, 1)
+	room := NewRoom(17, stopChan)
+	room.GameStage.Store(constants.STAGE_InGame)
+	quitter := connectedPlayer(100)
+	quitter.Name = "alice"
+	survivor := connectedPlayer(101)
+	survivor.Name = "bob"
+	room.RoomCtx.Players.Store(100, quitter)
+	room.RoomCtx.Players.Store(101, survivor)
+
+	reply := make(chan bool, 1)
+	room.handleLeaveUser(&LeaveUserRequest{Identity: LeaveIdentity{UserName: "alice"}, DestroyRoom: true, Reply: reply})
+	if !<-reply {
+		t.Fatal("主动退出应成功")
+	}
+	if !room.GameStage.EqualTo(constants.STAGE_CLOSED) {
+		t.Fatalf("对局中主动退出必须取消房间，当前 %d", room.GameStage.Load())
+	}
+	if room.FindMembershipByName("alice") != nil || room.FindMembershipByName("bob") != nil {
+		t.Fatal("房间取消后任何玩家都不能再查到席位/重连")
+	}
+	select {
+	case id := <-stopChan:
+		if id != 17 {
+			t.Fatalf("管理器应收到房间 17 的移除信号，实际 %d", id)
+		}
+	default:
+		t.Fatal("房间取消必须通知 manager 移除引用")
+	}
+}
+
 func TestUserMembershipAndPermanentLeave(t *testing.T) {
 	stopChan := make(chan int, 1)
 	room := NewRoom(16, stopChan)
@@ -155,7 +187,7 @@ func TestUserMembershipAndPermanentLeave(t *testing.T) {
 	}
 
 	reply := make(chan bool, 1)
-	room.handleLeaveUser(&LeaveUserRequest{UserName: "alice", Reply: reply})
+	room.handleLeaveUser(&LeaveUserRequest{Identity: LeaveIdentity{UserName: "alice"}, Reply: reply})
 	if !<-reply {
 		t.Fatal("永久退出应成功")
 	}

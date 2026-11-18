@@ -98,6 +98,24 @@ func (w *ConnWriter) Close() {
 	}
 }
 
+// CloseGracefully 停止接收新消息，但是先把已入队的消息写完再关闭连接。
+// 用于房间销毁/主动退出前必须送达的最后一条消息（如 roomClosed）。
+func (w *ConnWriter) CloseGracefully() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return
+	}
+	w.closed = true
+	w.mu.Unlock()
+
+	// run() 看到 closed 且队列已空后会自行退出并关闭连接。
+	// 不再关闭 done，保证入队的高优先级消息（roomClosed）先被写出。
+}
+
 // Wait 等待 writer goroutine 退出；主要用于测试与关停确认。
 func (w *ConnWriter) Wait() {
 	if w == nil {
@@ -108,6 +126,11 @@ func (w *ConnWriter) Wait() {
 
 func (w *ConnWriter) run() {
 	defer close(w.finished)
+	defer func() {
+		if w.conn != nil {
+			_ = w.conn.Close()
+		}
+	}()
 	for {
 		select {
 		case <-w.done:
@@ -121,6 +144,14 @@ func (w *ConnWriter) run() {
 				// 写失败：连接不可用。关闭自身触发读循环退出。
 				w.Close()
 				// 丢弃剩余队列，尽快退出
+				return
+			}
+			// 优雅关闭：数据已全部写出（本条处理后队列为空）才退出。
+			w.mu.Lock()
+			graceful := w.closed
+			empty := len(w.queue) == 0
+			w.mu.Unlock()
+			if graceful && empty {
 				return
 			}
 		}

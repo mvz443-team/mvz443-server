@@ -99,6 +99,17 @@ func (m *RoomCtx) CloseAll() {
 	})
 }
 
+// CloseAllGracefully 关闭所有连接，但先把已入队的广播消息写出再断开。
+// 房间销毁时用，确保 roomClosed 能送达客户端。
+func (m *RoomCtx) CloseGracefully() {
+	m.Players.Range(func(_ int, player *clients.Player) bool {
+		if player != nil && player.Ctx != nil {
+			player.Ctx.CloseGracefully()
+		}
+		return true
+	})
+}
+
 // -------------------
 // 发送信息
 // -------------------

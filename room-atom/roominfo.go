@@ -49,8 +49,9 @@ func (room *Room) buildPeersJSON() string {
 		if player == nil || player.Ctx == nil {
 			return true
 		}
-		// InGame 掉线保留席位的玩家也要下发（state=2），让对手看到断线提示
-		if player.Ctx.State != constants.PlayerStateConnected && room.GameStage.EqualTo(constants.STAGE_InGame) {
+		// 掉线/离线席位（state=2）也要下发，让对手看到断线提示：
+		// InGame 由重连宽限保留席位；其他阶段由主动退出在销毁前短暂标记。
+		if player.Ctx.State == constants.PlayerStateDisconnected {
 			peers = append(peers, peerInfo{
 				Addr:  peerAddrPlaceholder,
 				Id:    player.Ctx.Id,

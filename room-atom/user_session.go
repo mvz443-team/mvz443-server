@@ -27,8 +27,11 @@ type UserRoomMembership struct {
 
 // LeaveUserRequest 由 HTTP goroutine 投递给房间主循环。
 type LeaveUserRequest struct {
-	UserName string
-	Reply    chan bool
+	Identity    LeaveIdentity
+	// DestroyRoom 表示玩家主动退出对局：除了移除本人席位，还要取消整个房间，
+	// 其他人会看到本玩家离线并收到 roomClosed，房间不可再重连。
+	DestroyRoom bool
+	Reply       chan bool
 }
 
 // FindMembershipByName 查询昵称对应的玩家席位。
@@ -61,14 +64,28 @@ func (room *Room) FindMembershipByName(name string) *UserRoomMembership {
 	return found
 }
 
-// RequestLeaveUserByName 请求把指定昵称的玩家从房间里彻底移除。
-func (room *Room) RequestLeaveUserByName(name string) bool {
-	if room == nil || name == "" {
+// LeaveIdentity 指定要移除的席位：按昵称，或按房间号+玩家 ID+密钥。
+type LeaveIdentity struct {
+	UserName string
+	RoomID   int
+}
+
+// RequestLeaveUser 请求把指定玩家从房间里彻底移除。
+// destroyRoom=true 时同时取消整个房间（对局中主动退出：对方看到离线且无法重连）。
+func (room *Room) RequestLeaveUser(identity LeaveIdentity, destroyRoom bool) bool {
+	if room == nil {
+		return false
+	}
+	// 指定房间号时必须匹配，避免误删其他房间的同名玩家。
+	if identity.RoomID >= 0 && room.ID != identity.RoomID {
+		return false
+	}
+	if identity.UserName == "" {
 		return false
 	}
 	reply := make(chan bool, 1)
 	select {
-	case room.leaveUsers <- &LeaveUserRequest{UserName: name, Reply: reply}:
+	case room.leaveUsers <- &LeaveUserRequest{Identity: identity, DestroyRoom: destroyRoom, Reply: reply}:
 	case <-time.After(3 * time.Second):
 		return false
 	}
@@ -80,7 +97,7 @@ func (room *Room) RequestLeaveUserByName(name string) bool {
 	}
 }
 
-// handleLeaveUser 在房间主循环里移除玩家席位；空房间随即销毁。
+// handleLeaveUser 在房间主循环里移除玩家席位；destroyRoom 时取消整个房间，否则空房间随即销毁。
 func (room *Room) handleLeaveUser(request *LeaveUserRequest) {
 	if request == nil {
 		return
@@ -88,7 +105,11 @@ func (room *Room) handleLeaveUser(request *LeaveUserRequest) {
 	ok := false
 	var leavingID int
 	room.RoomCtx.Players.Range(func(id int, player *clients.Player) bool {
-		if player != nil && player.Name == request.UserName {
+		if player == nil || player.Ctx == nil {
+			return true
+		}
+		identity := request.Identity
+		if player.Name == identity.UserName && identity.UserName != "" {
 			leavingID = id
 			ok = true
 			return false
@@ -101,9 +122,15 @@ func (room *Room) handleLeaveUser(request *LeaveUserRequest) {
 	}
 
 	if target, ok := room.RoomCtx.Players.Load(leavingID); ok {
+		// 先广播“离线”房间信息，让仍在房间内的玩家看到该玩家状态变为 offline。
+		// 必须在关闭连接/删除席位之前发送，否则 buildPeersJSON 会跳过该玩家。
+		if request.DestroyRoom && target.Ctx != nil {
+			target.Ctx.State = constants.PlayerStateDisconnected
+			room.broadcastRoomInfo()
+		}
 		room.RoomCtx.SendMessageToUserByPlayer(&messages.RoomResponse{
 			Payload: &messages.RoomResponse_RoomClosed{
-				RoomClosed: &messages.ResponseRoomClosed{Message: "你已从房间中退出"},
+				RoomClosed: &messages.ResponseRoomClosed{Message: "你已退出游戏"},
 			},
 		}, target)
 		if target.Ctx != nil {
@@ -112,7 +139,15 @@ func (room *Room) handleLeaveUser(request *LeaveUserRequest) {
 	}
 	room.RoomCtx.DelUser(leavingID)
 	room.transferOwnerIfNeeded(leavingID)
-	log.Printf("🚪 玩家 %s 从房间 %d 永久退出", request.UserName, room.ID)
+	log.Printf("🚪 玩家 %d (%s) 从房间 %d 永久退出", leavingID, request.Identity.UserName, room.ID)
+
+	// 对局中主动退出：取消整个房间，对方收到 roomClosed 且不能再重连。
+	// 普通“放弃重连”不改变此行为：只在房间空了时销毁。
+	if request.DestroyRoom {
+		room.Destroy()
+		replyLeave(request, true)
+		return
+	}
 
 	if room.GetPlayerCount() == 0 {
 		room.Destroy()

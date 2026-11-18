@@ -4,6 +4,7 @@ import (
 	"log"
 	"mvzserver/constants"
 	messages "mvzserver/messages/pb"
+	roomatom "mvzserver/room-atom"
 	roommanager "mvzserver/room-manager"
 	"mvzserver/types"
 	"mvzserver/utils"
@@ -59,10 +60,18 @@ func (sh *ServerHandler) HandleUserRoom(c *fiber.Ctx) error {
 	return c.JSON(membership)
 }
 
-// HandleLeaveUserRoom 玩家选择“不重连”时永久退出所在房间。
+// HandleLeaveUserRoom 玩家永久退出所在房间。
+// destroy=1 表示对局中主动退出：取消整个房间，对方看到离线且无法重连。
+// 可用 user=昵称定位席位；room_id 可选，用于限定房间范围。
 func (sh *ServerHandler) HandleLeaveUserRoom(c *fiber.Ctx) error {
 	name := utils.NormalizeUserName(c.Query("user"))
-	return c.JSON(fiber.Map{"ok": sh.RoomMnager.LeaveUserRoom(name)})
+	roomID := parseIntOr(c.Query("room_id"), -1)
+	identity := roomatom.LeaveIdentity{
+		UserName: name,
+		RoomID:   roomID,
+	}
+	destroyRoom := c.Query("destroy") == "1"
+	return c.JSON(fiber.Map{"ok": sh.RoomMnager.LeaveUserRoom(identity, destroyRoom)})
 }
 
 func (sh *ServerHandler) HandleWS(c *websocket.Conn) {
