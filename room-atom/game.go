@@ -521,6 +521,8 @@ func (room *Room) acceptInGameBase(player *Player, req *messages.RequestBlank) b
 	if req.ClientLatencyMs > 0 && req.ClientLatencyMs < 60_000 {
 		player.Ctx.ReportedLatencyMs.Store(req.ClientLatencyMs)
 	}
+	// 每帧心跳带来的资源 profile 覆盖保存；重连时随 AllReady 回传。
+	room.recordPlayerResources(player.Ctx.Id, req)
 	player.Ctx.StateHashVersion.Store(req.StateHashVersion)
 	player.Ctx.StateHashVersionReported.Store(true)
 	if shouldLogFrameDetail(req.FrameId) || req.HashFrameId != 0 {

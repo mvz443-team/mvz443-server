@@ -83,6 +83,10 @@ type Room struct {
 	pendingRecoveries     map[uint32]*pendingRecovery
 	nextSnapshotRequestID uint32
 
+	// 每帧上报的资源 profile（能量、星之碎片、卡槽冷却），按玩家保存。
+	// 页面刷新重连时随 AllReady 回传；Reset 时清空，不跨局复用。
+	resourceProfiles map[int]*messages.PlayerResourceState
+
 	// InGame 断线席位管理：掉线时刻与宽限期截止时刻。
 	// 宽限期内可重连补帧；超时由 tickReconnectGrace 判负结束。
 	ReconnectDeadline time.Time
@@ -143,6 +147,7 @@ func NewRoom(id int, stopChan chan int) *Room {
 		frameHistory:      make(map[uint32]*messages.InGameResponse),
 		Checkpoints:       make(map[uint32]*stateCheckpoint),
 		pendingRecoveries: make(map[uint32]*pendingRecovery),
+		resourceProfiles:  make(map[int]*messages.PlayerResourceState),
 	}
 }
 
@@ -162,6 +167,7 @@ func (room *Room) Reset() {
 	room.scheduledFrames = make(map[uint32]*FrameSubmission)
 	room.frameHistory = make(map[uint32]*messages.InGameResponse)
 	room.pendingRecoveries = make(map[uint32]*pendingRecovery)
+	room.resourceProfiles = make(map[int]*messages.PlayerResourceState)
 	// 清空对局期间的席位管理状态
 	room.ReconnectDeadline = time.Time{}
 	room.AnyPlayerDisconnected = false

@@ -427,6 +427,7 @@ func (room *Room) HandleRequestReady(player *Player, req *messages.RequestReady)
 				RoomId:         uint32(room.ID),
 				ChapterId:      room.ChapterID,
 				StageId:        room.StageID,
+				Resources:      room.captureResourceProfiles(),
 			}
 			resp := &messages.RoomResponse{
 				Payload: &messages.RoomResponse_AllReady{

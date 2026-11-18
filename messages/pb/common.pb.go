@@ -280,6 +280,164 @@ func (x *PlayerLoadout) GetHash() string {
 	return ""
 }
 
+// 单张卡片的权威冷却状态，随心跳每帧上报，服务端按玩家保存为 profile。
+type CardCooldownState struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	Pid   uint32 `protobuf:"varint,1,opt,name=pid,proto3" json:"pid,omitempty"`
+	Level uint32 `protobuf:"varint,2,opt,name=level,proto3" json:"level,omitempty"`
+	// 剩余冷却毫秒数（取整）；0 表示已就绪
+	LeftMs uint32 `protobuf:"varint,3,opt,name=left_ms,json=leftMs,proto3" json:"left_ms,omitempty"`
+	// 总冷却毫秒数，用于客户端按比例恢复冷却条
+	TotalMs uint32 `protobuf:"varint,4,opt,name=total_ms,json=totalMs,proto3" json:"total_ms,omitempty"`
+}
+
+func (x *CardCooldownState) Reset() {
+	*x = CardCooldownState{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_common_proto_msgTypes[4]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *CardCooldownState) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CardCooldownState) ProtoMessage() {}
+
+func (x *CardCooldownState) ProtoReflect() protoreflect.Message {
+	mi := &file_common_proto_msgTypes[4]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CardCooldownState.ProtoReflect.Descriptor instead.
+func (*CardCooldownState) Descriptor() ([]byte, []int) {
+	return file_common_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *CardCooldownState) GetPid() uint32 {
+	if x != nil {
+		return x.Pid
+	}
+	return 0
+}
+
+func (x *CardCooldownState) GetLevel() uint32 {
+	if x != nil {
+		return x.Level
+	}
+	return 0
+}
+
+func (x *CardCooldownState) GetLeftMs() uint32 {
+	if x != nil {
+		return x.LeftMs
+	}
+	return 0
+}
+
+func (x *CardCooldownState) GetTotalMs() uint32 {
+	if x != nil {
+		return x.TotalMs
+	}
+	return 0
+}
+
+// 一名玩家最近的资源 profile：能量、星之碎片与卡槽冷却。
+// 页面刷新后本地模拟状态全部丢失，重连时由服务端随 AllReady 回传，
+// 让客户端在快照不可用时也能恢复资源与冷却显示。
+type PlayerResourceState struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	PlayerId      uint32               `protobuf:"varint,1,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
+	Energy        uint32               `protobuf:"varint,2,opt,name=energy,proto3" json:"energy,omitempty"`
+	StarShards    uint32               `protobuf:"varint,3,opt,name=star_shards,json=starShards,proto3" json:"star_shards,omitempty"`
+	CardCooldowns []*CardCooldownState `protobuf:"bytes,4,rep,name=card_cooldowns,json=cardCooldowns,proto3" json:"card_cooldowns,omitempty"`
+	// 该 profile 对应的权威帧号。客户端只在本地模拟追到该帧后才应用，
+	// 避免补帧期间用“终态”覆盖从初始状态重演的资源，造成摘要分叉。
+	FrameId uint32 `protobuf:"varint,5,opt,name=frame_id,json=frameId,proto3" json:"frame_id,omitempty"`
+}
+
+func (x *PlayerResourceState) Reset() {
+	*x = PlayerResourceState{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_common_proto_msgTypes[5]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *PlayerResourceState) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PlayerResourceState) ProtoMessage() {}
+
+func (x *PlayerResourceState) ProtoReflect() protoreflect.Message {
+	mi := &file_common_proto_msgTypes[5]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PlayerResourceState.ProtoReflect.Descriptor instead.
+func (*PlayerResourceState) Descriptor() ([]byte, []int) {
+	return file_common_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *PlayerResourceState) GetPlayerId() uint32 {
+	if x != nil {
+		return x.PlayerId
+	}
+	return 0
+}
+
+func (x *PlayerResourceState) GetEnergy() uint32 {
+	if x != nil {
+		return x.Energy
+	}
+	return 0
+}
+
+func (x *PlayerResourceState) GetStarShards() uint32 {
+	if x != nil {
+		return x.StarShards
+	}
+	return 0
+}
+
+func (x *PlayerResourceState) GetCardCooldowns() []*CardCooldownState {
+	if x != nil {
+		return x.CardCooldowns
+	}
+	return nil
+}
+
+func (x *PlayerResourceState) GetFrameId() uint32 {
+	if x != nil {
+		return x.FrameId
+	}
+	return 0
+}
+
 var File_common_proto protoreflect.FileDescriptor
 
 var file_common_proto_rawDesc = []byte{
@@ -314,8 +472,28 @@ var file_common_proto_rawDesc = []byte{
 	0x6d, 0x65, 0x73, 0x73, 0x61, 0x67, 0x65, 0x73, 0x2e, 0x4c, 0x6f, 0x61, 0x64, 0x6f, 0x75, 0x74,
 	0x53, 0x6e, 0x61, 0x70, 0x73, 0x68, 0x6f, 0x74, 0x52, 0x07, 0x6c, 0x6f, 0x61, 0x64, 0x6f, 0x75,
 	0x74, 0x12, 0x12, 0x0a, 0x04, 0x68, 0x61, 0x73, 0x68, 0x18, 0x03, 0x20, 0x01, 0x28, 0x09, 0x52,
-	0x04, 0x68, 0x61, 0x73, 0x68, 0x42, 0x0d, 0x5a, 0x0b, 0x2e, 0x2f, 0x3b, 0x6d, 0x65, 0x73, 0x73,
-	0x61, 0x67, 0x65, 0x73, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
+	0x04, 0x68, 0x61, 0x73, 0x68, 0x22, 0x6f, 0x0a, 0x11, 0x43, 0x61, 0x72, 0x64, 0x43, 0x6f, 0x6f,
+	0x6c, 0x64, 0x6f, 0x77, 0x6e, 0x53, 0x74, 0x61, 0x74, 0x65, 0x12, 0x10, 0x0a, 0x03, 0x70, 0x69,
+	0x64, 0x18, 0x01, 0x20, 0x01, 0x28, 0x0d, 0x52, 0x03, 0x70, 0x69, 0x64, 0x12, 0x14, 0x0a, 0x05,
+	0x6c, 0x65, 0x76, 0x65, 0x6c, 0x18, 0x02, 0x20, 0x01, 0x28, 0x0d, 0x52, 0x05, 0x6c, 0x65, 0x76,
+	0x65, 0x6c, 0x12, 0x17, 0x0a, 0x07, 0x6c, 0x65, 0x66, 0x74, 0x5f, 0x6d, 0x73, 0x18, 0x03, 0x20,
+	0x01, 0x28, 0x0d, 0x52, 0x06, 0x6c, 0x65, 0x66, 0x74, 0x4d, 0x73, 0x12, 0x19, 0x0a, 0x08, 0x74,
+	0x6f, 0x74, 0x61, 0x6c, 0x5f, 0x6d, 0x73, 0x18, 0x04, 0x20, 0x01, 0x28, 0x0d, 0x52, 0x07, 0x74,
+	0x6f, 0x74, 0x61, 0x6c, 0x4d, 0x73, 0x22, 0xca, 0x01, 0x0a, 0x13, 0x50, 0x6c, 0x61, 0x79, 0x65,
+	0x72, 0x52, 0x65, 0x73, 0x6f, 0x75, 0x72, 0x63, 0x65, 0x53, 0x74, 0x61, 0x74, 0x65, 0x12, 0x1b,
+	0x0a, 0x09, 0x70, 0x6c, 0x61, 0x79, 0x65, 0x72, 0x5f, 0x69, 0x64, 0x18, 0x01, 0x20, 0x01, 0x28,
+	0x0d, 0x52, 0x08, 0x70, 0x6c, 0x61, 0x79, 0x65, 0x72, 0x49, 0x64, 0x12, 0x16, 0x0a, 0x06, 0x65,
+	0x6e, 0x65, 0x72, 0x67, 0x79, 0x18, 0x02, 0x20, 0x01, 0x28, 0x0d, 0x52, 0x06, 0x65, 0x6e, 0x65,
+	0x72, 0x67, 0x79, 0x12, 0x1f, 0x0a, 0x0b, 0x73, 0x74, 0x61, 0x72, 0x5f, 0x73, 0x68, 0x61, 0x72,
+	0x64, 0x73, 0x18, 0x03, 0x20, 0x01, 0x28, 0x0d, 0x52, 0x0a, 0x73, 0x74, 0x61, 0x72, 0x53, 0x68,
+	0x61, 0x72, 0x64, 0x73, 0x12, 0x42, 0x0a, 0x0e, 0x63, 0x61, 0x72, 0x64, 0x5f, 0x63, 0x6f, 0x6f,
+	0x6c, 0x64, 0x6f, 0x77, 0x6e, 0x73, 0x18, 0x04, 0x20, 0x03, 0x28, 0x0b, 0x32, 0x1b, 0x2e, 0x6d,
+	0x65, 0x73, 0x73, 0x61, 0x67, 0x65, 0x73, 0x2e, 0x43, 0x61, 0x72, 0x64, 0x43, 0x6f, 0x6f, 0x6c,
+	0x64, 0x6f, 0x77, 0x6e, 0x53, 0x74, 0x61, 0x74, 0x65, 0x52, 0x0d, 0x63, 0x61, 0x72, 0x64, 0x43,
+	0x6f, 0x6f, 0x6c, 0x64, 0x6f, 0x77, 0x6e, 0x73, 0x12, 0x19, 0x0a, 0x08, 0x66, 0x72, 0x61, 0x6d,
+	0x65, 0x5f, 0x69, 0x64, 0x18, 0x05, 0x20, 0x01, 0x28, 0x0d, 0x52, 0x07, 0x66, 0x72, 0x61, 0x6d,
+	0x65, 0x49, 0x64, 0x42, 0x0d, 0x5a, 0x0b, 0x2e, 0x2f, 0x3b, 0x6d, 0x65, 0x73, 0x73, 0x61, 0x67,
+	0x65, 0x73, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
 }
 
 var (
@@ -330,22 +508,25 @@ func file_common_proto_rawDescGZIP() []byte {
 	return file_common_proto_rawDescData
 }
 
-var file_common_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_common_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_common_proto_goTypes = []interface{}{
-	(*LoadoutCard)(nil),     // 0: messages.LoadoutCard
-	(*LoadoutModifier)(nil), // 1: messages.LoadoutModifier
-	(*LoadoutSnapshot)(nil), // 2: messages.LoadoutSnapshot
-	(*PlayerLoadout)(nil),   // 3: messages.PlayerLoadout
+	(*LoadoutCard)(nil),         // 0: messages.LoadoutCard
+	(*LoadoutModifier)(nil),     // 1: messages.LoadoutModifier
+	(*LoadoutSnapshot)(nil),     // 2: messages.LoadoutSnapshot
+	(*PlayerLoadout)(nil),       // 3: messages.PlayerLoadout
+	(*CardCooldownState)(nil),   // 4: messages.CardCooldownState
+	(*PlayerResourceState)(nil), // 5: messages.PlayerResourceState
 }
 var file_common_proto_depIdxs = []int32{
 	0, // 0: messages.LoadoutSnapshot.cards:type_name -> messages.LoadoutCard
 	1, // 1: messages.LoadoutSnapshot.global_modifiers:type_name -> messages.LoadoutModifier
 	2, // 2: messages.PlayerLoadout.loadout:type_name -> messages.LoadoutSnapshot
-	3, // [3:3] is the sub-list for method output_type
-	3, // [3:3] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	4, // 3: messages.PlayerResourceState.card_cooldowns:type_name -> messages.CardCooldownState
+	4, // [4:4] is the sub-list for method output_type
+	4, // [4:4] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_common_proto_init() }
@@ -402,6 +583,30 @@ func file_common_proto_init() {
 				return nil
 			}
 		}
+		file_common_proto_msgTypes[4].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*CardCooldownState); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
+		file_common_proto_msgTypes[5].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*PlayerResourceState); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -409,7 +614,7 @@ func file_common_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: file_common_proto_rawDesc,
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

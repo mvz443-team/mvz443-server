@@ -193,6 +193,7 @@ func (room *Room) sendAllReadyTo(player *clients.Player) {
 				RoomId:         uint32(room.ID),
 				ChapterId:      room.ChapterID,
 				StageId:        room.StageID,
+				Resources:      room.captureResourceProfiles(),
 			},
 		},
 	}, player)
