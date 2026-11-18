@@ -78,6 +78,11 @@ type Room struct {
 	Checkpoints         map[uint32]*stateCheckpoint
 	LastCheckpointFrame uint32
 
+	// 重连恢复：向最低延迟在线客户端索取快照，收到后转发给重连玩家。
+	// key 为 request_id，超时后自动回退到 checkpoint/历史帧。
+	pendingRecoveries     map[uint32]*pendingRecovery
+	nextSnapshotRequestID uint32
+
 	// InGame 断线席位管理：掉线时刻与宽限期截止时刻。
 	// 宽限期内可重连补帧；超时由 tickReconnectGrace 判负结束。
 	ReconnectDeadline time.Time
@@ -128,15 +133,16 @@ func NewRoom(id int, stopChan chan int) *Room {
 		done:           make(chan struct{}),
 
 		// 网络
-		register:         make(chan *clients.Player, 8), // 添加缓冲区
-		unregister:       make(chan *clients.Player, 8), // 添加缓冲区
-		reconnect:        make(chan *ReconnectRequest, 8),
-		leaveUsers:       make(chan *LeaveUserRequest, 8),
-		incomingMessages: make(chan *PlayerMessage, 128),
-		ingameOperations: gameOperationChan,
-		scheduledFrames:  make(map[uint32]*FrameSubmission),
-		frameHistory:     make(map[uint32]*messages.InGameResponse),
-		Checkpoints:      make(map[uint32]*stateCheckpoint),
+		register:          make(chan *clients.Player, 8), // 添加缓冲区
+		unregister:        make(chan *clients.Player, 8), // 添加缓冲区
+		reconnect:         make(chan *ReconnectRequest, 8),
+		leaveUsers:        make(chan *LeaveUserRequest, 8),
+		incomingMessages:  make(chan *PlayerMessage, 128),
+		ingameOperations:  gameOperationChan,
+		scheduledFrames:   make(map[uint32]*FrameSubmission),
+		frameHistory:      make(map[uint32]*messages.InGameResponse),
+		Checkpoints:       make(map[uint32]*stateCheckpoint),
+		pendingRecoveries: make(map[uint32]*pendingRecovery),
 	}
 }
 
@@ -155,6 +161,7 @@ func (room *Room) Reset() {
 	}
 	room.scheduledFrames = make(map[uint32]*FrameSubmission)
 	room.frameHistory = make(map[uint32]*messages.InGameResponse)
+	room.pendingRecoveries = make(map[uint32]*pendingRecovery)
 	// 清空对局期间的席位管理状态
 	room.ReconnectDeadline = time.Time{}
 	room.AnyPlayerDisconnected = false

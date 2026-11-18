@@ -518,6 +518,9 @@ func (room *Room) acceptInGameBase(player *Player, req *messages.RequestBlank) b
 		})
 	}
 	player.Ctx.UpdatePlayerFrame(frameID, ackFrameID)
+	if req.ClientLatencyMs > 0 && req.ClientLatencyMs < 60_000 {
+		player.Ctx.ReportedLatencyMs.Store(req.ClientLatencyMs)
+	}
 	player.Ctx.StateHashVersion.Store(req.StateHashVersion)
 	player.Ctx.StateHashVersionReported.Store(true)
 	if shouldLogFrameDetail(req.FrameId) || req.HashFrameId != 0 {

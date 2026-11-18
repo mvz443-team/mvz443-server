@@ -37,6 +37,9 @@ type ClientCtx struct {
 	// 开始，但客户端尚未上报版本，此时把默认值 0 当成“旧客户端”会误报
 	// 版本不一致。
 	StateHashVersionReported atomic.Bool
+	// ReportedLatencyMs 客户端自报的往返延迟（毫秒），用于重连时挑选快照来源。
+	// 0 表示客户端尚未上报。
+	ReportedLatencyMs atomic.Uint32
 
 	// 上次收到该连接任意消息的时间戳（毫秒）；由读循环更新，主循环读取。
 	// 用于心跳超时判定：大厅阶段没有业务帧，靠它发现假死连接。
@@ -58,6 +61,7 @@ func NewClientCtx(conn *websocket.Conn, id int) *ClientCtx {
 		Id:     id,
 		Conn:   conn,
 		writer: NewConnWriter(id, conn),
+		State:  constants.PlayerStateConnected,
 	}
 	// 连接建立时刻即视为一次心跳，避免“从未收到消息”时永不超时
 	ctx.TouchHeartbeat()

@@ -190,6 +190,9 @@ func (room *Room) sendAllReadyTo(player *clients.Player) {
 				MyId:           uint32(player.Ctx.Id),
 				PlayerIds:      room.allReadyPlayerIDs(),
 				Loadouts:       room.canonicalPlayerLoadouts(),
+				RoomId:         uint32(room.ID),
+				ChapterId:      room.ChapterID,
+				StageId:        room.StageID,
 			},
 		},
 	}, player)

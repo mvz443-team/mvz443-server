@@ -210,6 +210,7 @@ func (room *Room) handleReconnect(request *ReconnectRequest) {
 		newCtx.LatestAckFrameID.Store(resumeFrame)
 		newCtx.StateHashVersion.Store(target.Ctx.StateHashVersion.Load())
 		newCtx.StateHashVersionReported.Store(target.Ctx.StateHashVersionReported.Load())
+		newCtx.ReportedLatencyMs.Store(target.Ctx.ReportedLatencyMs.Load())
 		newCtx.State = constants.PlayerStateConnected
 
 		oldCtx := target.Ctx
@@ -223,9 +224,14 @@ func (room *Room) handleReconnect(request *ReconnectRequest) {
 		log.Printf("🟢 玩家 %d 重连成功，从 checkpoint=%d 继续", request.PlayerID, resumeFrame)
 		room.onPlayerReconnected(target)
 		// 页面刷新/新场景需要种子与 loadout；随后 roomAllSync 会把阶段切回 InGame。
+		// 先补一份房间信息，让客户端拿到房间号、房主、章节关卡与当前 peers。
+		room.sendRoomInfoTo(target, room.buildPeersJSON())
 		room.sendAllReadyTo(target)
 		room.sendReplayFromCheckpoint(target)
 		room.sendRoomAllSyncTo(target)
+		// 备用恢复：向最低延迟在线玩家索取最新快照，收到后追加转发。
+		// 即使 checkpoint 不存在或已过期，客户端也能从在线玩家的当前状态快速恢复。
+		room.requestReconnectSnapshot(target)
 	} else {
 		newCtx := clients.NewClientCtx(request.Conn, request.PlayerID)
 		newCtx.State = constants.PlayerStateConnected
@@ -341,6 +347,9 @@ func (room *Room) handlePlayerMessage(msg *PlayerMessage) {
 	// PostGame 结算后返回等待房间
 	case *messages.Request_ReturnToLobby:
 		room.HandleRequestReturnToLobby(msg.Player, payload.ReturnToLobby)
+	// 重连恢复：在线客户端上传快照
+	case *messages.Request_SnapshotResponse:
+		room.HandleRequestSnapshotResponse(msg.Player, payload.SnapshotResponse)
 
 	default:
 		// 未知请求类型
@@ -415,6 +424,9 @@ func (room *Room) HandleRequestReady(player *Player, req *messages.RequestReady)
 				MyId:           uint32(value.Ctx.Id),
 				PlayerIds:      playerIDs,
 				Loadouts:       canonicalLoadouts,
+				RoomId:         uint32(room.ID),
+				ChapterId:      room.ChapterID,
+				StageId:        room.StageID,
 			}
 			resp := &messages.RoomResponse{
 				Payload: &messages.RoomResponse_AllReady{

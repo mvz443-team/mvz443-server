@@ -78,6 +78,7 @@ func (room *Room) tickMaintenance() {
 	room.tickPostGame()
 	room.sweepStaleDisconnected()
 	room.tickRoomSync()
+	room.tickPendingRecoveries(time.Now())
 }
 
 // StartServeClient 该连接的读循环：把上行消息投递给房间主循环，
