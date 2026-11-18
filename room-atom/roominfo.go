@@ -22,6 +22,8 @@ type peerInfo struct {
 	Ready bool   `json:"ready"`
 	// 1=在线, 2=断线（等待重连）；见 constants.PlayerState
 	State int `json:"state"`
+	// Seat 房间内固定座位号，0 起；客户端按座位渲染，而不是数组下标。
+	Seat int `json:"seat"`
 }
 
 func (room *Room) GetName() string {
@@ -58,6 +60,7 @@ func (room *Room) buildPeersJSON() string {
 				Name:  player.Name,
 				Ready: player.IsReady,
 				State: int(constants.PlayerStateDisconnected),
+				Seat:  player.SeatIndex,
 			})
 			return true
 		}
@@ -70,9 +73,12 @@ func (room *Room) buildPeersJSON() string {
 			Name:  player.Name,
 			Ready: player.IsReady,
 			State: int(constants.PlayerStateConnected),
+			Seat:  player.SeatIndex,
 		})
 		return true
 	})
+	// 按座位排序，保证 peers 数组顺序稳定；客户端也用 seat 字段定位格子。
+	sort.Slice(peers, func(i, j int) bool { return peers[i].Seat < peers[j].Seat })
 	data, err := json.Marshal(peers)
 	if err != nil {
 		log.Printf("buildPeersJSON failed: %v", err)
@@ -208,27 +214,43 @@ func (room *Room) startPreparing() {
 
 // returnToLobby 从选卡阶段退回等待房间（房主返回或有人离开）。
 func (room *Room) returnToLobby() {
+	room.resetWaitingRoom(true)
+}
+
+// resetWaitingRoom 把房间拉回等待房间：阶段归位、清空所有人准备状态并广播。
+// emitQuitChooseMap 仅在从选卡阶段退回时为真；等待房间内有人离开不需要该事件。
+func (room *Room) resetWaitingRoom(emitQuitChooseMap bool) {
 	room.GameStage.Store(constants.STAGE_InLobby)
 	room.resetReadyFlags()
-	room.RoomCtx.BroadcastMessage(&messages.RoomResponse{
-		Payload: &messages.RoomResponse_QuitChooseMap{
-			QuitChooseMap: &messages.ResponseQuitChooseMap{},
-		},
-	}, nil)
+	if emitQuitChooseMap {
+		room.RoomCtx.BroadcastMessage(&messages.RoomResponse{
+			Payload: &messages.RoomResponse_QuitChooseMap{
+				QuitChooseMap: &messages.ResponseQuitChooseMap{},
+			},
+		}, nil)
+	}
 	room.broadcastRoomInfo()
 	room.broadcastReadyCount()
 }
 
-// transferOwnerIfNeeded 房主离开后把房主身份交给房间里剩下的玩家。
+// transferOwnerIfNeeded 房主离开后把房主身份交给座位号最小的剩余玩家。
 func (room *Room) transferOwnerIfNeeded(leavingID int) {
 	if room.RoomCtx.OwnerUserID != leavingID {
 		return
 	}
 	room.RoomCtx.OwnerUserID = 0
+	bestSeat := constants.RoomCapacity
 	room.RoomCtx.Players.Range(func(_ int, player *clients.Player) bool {
-		if player != nil && player.Ctx != nil && player.Ctx.Id != leavingID {
+		if player == nil || player.Ctx == nil || player.Ctx.Id == leavingID {
+			return true
+		}
+		seat := player.SeatIndex
+		if seat < 0 {
+			seat = constants.RoomCapacity
+		}
+		if room.RoomCtx.OwnerUserID == 0 || seat < bestSeat {
 			room.RoomCtx.OwnerUserID = player.Ctx.Id
-			return false
+			bestSeat = seat
 		}
 		return true
 	})

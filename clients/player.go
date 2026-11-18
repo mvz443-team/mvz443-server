@@ -36,6 +36,10 @@ func ReleasePlayerMessage(msg *PlayerMessage) {
 type Player struct {
 	Ctx *ClientCtx // 客户端连接上下文
 
+	// SeatIndex 房间内固定座位号，0 起；-1 表示尚未分配。
+	// 由 RoomCtx.AddUser 分配最小空闲座位；退出后自动释放，供后来者补位。
+	SeatIndex int
+
 	IsReady  bool // 是否准备好（等待房间 / 选卡确认共用）
 	IsLoaded bool // 是否加载完毕
 	// LoadProgress Loading 阶段加载进度，1..100；100 表示完全加载好等待同步。
@@ -58,6 +62,7 @@ type Player struct {
 func NewPlayer(ctx *ClientCtx) Player {
 	return Player{
 		Ctx:          ctx,
+		SeatIndex:    -1,
 		IsReady:      false,
 		IsLoaded:     false,
 		LoadProgress: 0,

@@ -273,6 +273,23 @@ func (room *Room) HasAllPlayerReady() bool {
 	return allReady
 }
 
+// HasAllNonOwnerReady 检查除房主外的所有成员是否都已准备。
+// 等待房间里房主不点“准备”，而是用“开始”推进阶段，因此开局条件只看其他成员。
+func (room *Room) HasAllNonOwnerReady() bool {
+	allReady := true
+	room.RoomCtx.Players.Range(func(_ int, player *clients.Player) bool {
+		if player == nil || player.Ctx == nil || player.Ctx.Id == room.RoomCtx.OwnerUserID {
+			return true
+		}
+		if !player.IsReady {
+			allReady = false
+			return false
+		}
+		return true
+	})
+	return allReady
+}
+
 func (room *Room) HasAllPlayerLoaded() bool {
 	// 检查是否所有玩家都加载完毕
 	allLoaded := true

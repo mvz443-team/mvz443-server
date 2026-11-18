@@ -169,7 +169,7 @@ func (sh *ServerHandler) HandleWS(c *websocket.Conn) {
 		}
 
 		// 房间存在,检查是否已满
-		if room.GetPlayerCount() >= 2 {
+		if room.GetPlayerCount() >= constants.RoomCapacity {
 			payload.Message = "房间已满"
 			utils.WriteLobbyResponse(c, &resp)
 			c.Close()

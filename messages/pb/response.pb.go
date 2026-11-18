@@ -999,8 +999,9 @@ type ResponseRoomInfo struct {
 	// 告诉客户端，你的id是什么
 	MyId uint32 `protobuf:"varint,3,opt,name=my_id,json=myId,proto3" json:"my_id,omitempty"`
 	// 房间内玩家情况
-	// json 字段: [{"id":int,"name":string,"addr":string,"ready":bool,"state":int}]
+	// json 字段: [{"id":int,"name":string,"addr":string,"ready":bool,"state":int,"seat":int}]
 	// state: 1=在线, 2=断线（等待重连）
+	// seat: 房间内固定座位号（0 起），客户端按它渲染位置而不是数组下标
 	Peers string `protobuf:"bytes,4,opt,name=peers,proto3" json:"peers,omitempty"`
 	// 房间名（房主可修改）
 	RoomName string `protobuf:"bytes,5,opt,name=room_name,json=roomName,proto3" json:"room_name,omitempty"`

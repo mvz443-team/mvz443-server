@@ -2,6 +2,9 @@ package constants
 
 import "sync/atomic"
 
+// 房间固定席位数。当前为双人房；未来扩展多人房只需调整此值。
+const RoomCapacity = 2
+
 // 游戏的各个阶段
 type Stage uint8
 

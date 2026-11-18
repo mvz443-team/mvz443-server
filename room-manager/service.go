@@ -41,7 +41,8 @@ func (rm *RoomManager) GetRooms(chapterID, stageID int) []types.RoomsInfo {
 	var rooms []types.RoomsInfo
 	rm.rooms.Range(func(id int, room *Room) bool {
 		playerCount := int(room.GetPlayerCount())
-		if playerCount <= 0 {
+		// 0 人房间与已关闭房间都不应出现在列表里，避免退出后残留“幽灵房间”。
+		if playerCount <= 0 || room.GameStage.Load() >= constants.STAGE_CLOSED {
 			return true
 		}
 		roomChapter, roomStage := room.GetBoundStage()

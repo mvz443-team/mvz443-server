@@ -152,8 +152,14 @@ func (room *Room) handleLeaveUser(request *LeaveUserRequest) {
 	if room.GetPlayerCount() == 0 {
 		room.Destroy()
 	} else {
-		room.broadcastRoomInfo()
-		room.broadcastReadyCount()
+		// 等待房间/选卡阶段有人永久退出：拉回等待房间并清空所有人的准备状态。
+		stage := room.GameStage.Load()
+		if stage == constants.STAGE_InLobby || stage == constants.STAGE_Preparing {
+			room.resetWaitingRoom(stage == constants.STAGE_Preparing)
+		} else {
+			room.broadcastRoomInfo()
+			room.broadcastReadyCount()
+		}
 	}
 	replyLeave(request, true)
 }

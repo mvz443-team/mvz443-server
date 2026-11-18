@@ -115,6 +115,19 @@ func (room *Room) handleRegister(player *clients.Player) {
 		return
 	}
 
+	// 主循环内再校验一次人数：HTTP 入口的检查与注册事件之间可能有并发加入。
+	if room.GetPlayerCount() >= constants.RoomCapacity {
+		room.RoomCtx.SendMessageToUserByPlayer(&messages.RoomResponse{
+			Payload: &messages.RoomResponse_RoomClosed{
+				RoomClosed: &messages.ResponseRoomClosed{Message: "房间已满"},
+			},
+		}, player)
+		if player.Ctx != nil {
+			player.Ctx.Close()
+		}
+		return
+	}
+
 	room.RoomCtx.AddUser(player)
 	room.broadcastRoomInfo()
 	// 已经在选卡的房间：新加入的玩家直接进入选卡界面
@@ -149,9 +162,11 @@ func (room *Room) handleUnregister(player *clients.Player) {
 		room.Destroy()
 		return
 	}
-	// 选卡阶段有人离开：退回等待房间，避免剩下的人卡在选卡界面
-	if room.GameStage.EqualTo(constants.STAGE_Preparing) {
-		room.returnToLobby()
+	// 等待房间/选卡阶段有人离开：一律回到等待房间并清空所有人的准备状态，
+	// 避免剩下的人停留在“已准备”而无法重新推进。
+	stage := room.GameStage.Load()
+	if stage == constants.STAGE_InLobby || stage == constants.STAGE_Preparing {
+		room.resetWaitingRoom(stage == constants.STAGE_Preparing)
 		return
 	}
 	room.broadcastRoomInfo()
@@ -227,8 +242,9 @@ func (room *Room) handleReconnect(request *ReconnectRequest) {
 		// 先补一份房间信息，让客户端拿到房间号、房主、章节关卡与当前 peers。
 		room.sendRoomInfoTo(target, room.buildPeersJSON())
 		room.sendAllReadyTo(target)
-		room.sendReplayFromCheckpoint(target)
-		room.sendRoomAllSyncTo(target)
+	// 先把阶段切成 InGame，让新连接的消息进入房间通道。
+	room.sendRoomAllSyncTo(target)
+	room.sendReplayFromCheckpoint(target)
 		// 备用恢复：向最低延迟在线玩家索取最新快照，收到后追加转发。
 		// 即使 checkpoint 不存在或已过期，客户端也能从在线玩家的当前状态快速恢复。
 		room.requestReconnectSnapshot(target)
@@ -367,6 +383,10 @@ func (room *Room) HandleRequestReady(player *Player, req *messages.RequestReady)
 		log.Printf("🔴 HandleRequestReady: Rejected - room stage %d", stage)
 		return
 	}
+	// 等待房间里房主不点“准备”：由房主的“开始”按钮推进到选卡阶段。
+	if stage == constants.STAGE_InLobby && room.RoomCtx.OwnerUserID == player.Ctx.Id {
+		return
+	}
 
 	player.IsReady = req.IsReady
 	if req.IsReady {
@@ -376,10 +396,6 @@ func (room *Room) HandleRequestReady(player *Player, req *messages.RequestReady)
 
 	if stage == constants.STAGE_InLobby {
 		room.broadcastRoomInfo()
-		if room.HasAllPlayerReady() {
-			room.startPreparing()
-			return
-		}
 		room.broadcastReadyCount()
 		return
 	}
@@ -462,6 +478,15 @@ func (room *Room) HandleRequestChooseMap(player *Player, req *messages.RequestCh
 	}
 	// 只能在 STAGE_InLobby 阶段处理
 	if !room.GameStage.EqualTo(constants.STAGE_InLobby) {
+		return
+	}
+	// 只有其他成员全部准备，房主才能开始。
+	if !room.HasAllNonOwnerReady() {
+		room.RoomCtx.SendMessageToUserByPlayer(&messages.RoomResponse{
+			Payload: &messages.RoomResponse_Error{
+				Error: &messages.ResponseErrorMessage{Message: "其他玩家尚未准备，无法开始"},
+			},
+		}, player)
 		return
 	}
 
@@ -549,8 +574,10 @@ func (room *Room) HandleRequestKickPlayer(player *Player, req *messages.RequestK
 		target.Ctx.ForceClose()
 	}
 
-	if room.GameStage.EqualTo(constants.STAGE_Preparing) {
-		room.returnToLobby()
+	// 等待房间/选卡阶段踢人后同样清空准备状态，避免残留 ready 卡住流程
+	stage := room.GameStage.Load()
+	if stage == constants.STAGE_InLobby || stage == constants.STAGE_Preparing {
+		room.resetWaitingRoom(stage == constants.STAGE_Preparing)
 		return
 	}
 	room.broadcastRoomInfo()

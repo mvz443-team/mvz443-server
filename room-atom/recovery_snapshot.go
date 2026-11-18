@@ -102,7 +102,7 @@ func (room *Room) HandleRequestSnapshotResponse(player *Player, req *messages.Re
 		return
 	}
 	target, ok := room.RoomCtx.Players.Load(pending.targetPlayerID)
-	if !ok || target == nil || target.Ctx == nil || !target.Ctx.IsConnected() {
+	if !ok || target == nil || target.Ctx == nil {
 		return
 	}
 	if req.FrameId == 0 || req.FrameId > room.currentServerFrameID() {
@@ -110,10 +110,42 @@ func (room *Room) HandleRequestSnapshotResponse(player *Player, req *messages.Re
 			player.Ctx.Id, req.FrameId, req.RequestId)
 		return
 	}
-	if !room.sendSnapshotReplayTo(target, req.FrameId, req.InlineSnapshotJson) {
+	frames, ok := room.recoveryReplayFrames(req.FrameId)
+	if !ok {
 		log.Printf("⚠️ 房间 %d 无法把快照 frame=%d 转发给玩家 %d（历史帧缺口）",
 			room.ID, req.FrameId, target.Ctx.Id)
+		return
 	}
+	room.RoomCtx.SendMessageToUserByPlayer(&messages.RoomResponse{
+		Payload: &messages.RoomResponse_ReplayFrames{
+			ReplayFrames: &messages.ResponseReplayFrames{
+				Frames:             frames,
+				FromFrameId:        req.FrameId,
+				ToFrameId:          req.FrameId + uint32(len(frames)) - 1,
+				CheckpointFrameId:  req.FrameId,
+				InlineSnapshotJson: req.InlineSnapshotJson,
+			},
+		},
+	}, target)
+	log.Printf("📸 房间 %d 已把快照 frame=%d 转发给玩家 %d，并补齐 %d 帧",
+		room.ID, req.FrameId, target.Ctx.Id, len(frames))
+}
+
+// recoveryReplayFrames 返回 [fromFrame, currentServerFrame] 的连续权威帧。
+func (room *Room) recoveryReplayFrames(fromFrame uint32) ([]*messages.InGameResponse, bool) {
+	toFrame := room.currentServerFrameID()
+	if fromFrame > toFrame {
+		return nil, true
+	}
+	frames := make([]*messages.InGameResponse, 0, toFrame-fromFrame+1)
+	for frameID := fromFrame; frameID <= toFrame; frameID++ {
+		response, ok := room.frameHistory[frameID]
+		if !ok {
+			return nil, false
+		}
+		frames = append(frames, response)
+	}
+	return frames, true
 }
 
 // sendSnapshotReplayTo 把快照和 [frame+1, 服务端权威帧] 的操作发给重连玩家。
@@ -125,17 +157,13 @@ func (room *Room) sendSnapshotReplayTo(target *Player, frameID uint32, inlineSna
 	if toFrame < frameID {
 		return false
 	}
-	fromFrame := frameID + 1
-	frames := make([]*messages.InGameResponse, 0, toFrame-fromFrame+1)
-	for id := fromFrame; id <= toFrame; id++ {
-		response, ok := room.frameHistory[id]
-		if !ok {
-			// 快照之后缺帧时无法保证连续恢复，保留调用方先前发送的
-			// checkpoint/完整历史帧兜底，避免制造新的断档。
-			return false
-		}
-		frames = append(frames, response)
+	frames, ok := room.recoveryReplayFrames(frameID + 1)
+	if !ok {
+		// 快照之后缺帧时无法保证连续恢复，保留调用方先前发送的
+		// checkpoint/完整历史帧兜底，避免制造新的断档。
+		return false
 	}
+	fromFrame := frameID + 1
 	room.RoomCtx.SendMessageToUserByPlayer(&messages.RoomResponse{
 		Payload: &messages.RoomResponse_ReplayFrames{
 			ReplayFrames: &messages.ResponseReplayFrames{

@@ -76,12 +76,34 @@ func (m *RoomCtx) CreateClientCtxFromConn(conn *websocket.Conn) *ClientCtx {
 	return clients.NewClientCtx(conn, newId)
 }
 
-// AddUser 注册玩家；首位加入者成为房主。
+// AddUser 注册玩家：分配最小空闲座位，首位加入者成为房主。
 func (m *RoomCtx) AddUser(p *clients.Player) {
+	if p == nil || p.Ctx == nil {
+		return
+	}
+	p.SeatIndex = m.allocateSeat()
 	m.Players.Store(p.Ctx.Id, p)
 	if m.OwnerUserID == 0 {
 		m.OwnerUserID = p.Ctx.Id
 	}
+}
+
+// allocateSeat 返回 [0, RoomCapacity) 中最小的空闲座位号。
+// 房间已满时返回 -1；WS 入口已按人数拒绝，这里只做兜底。
+func (m *RoomCtx) allocateSeat() int {
+	used := make(map[int]struct{}, constants.RoomCapacity)
+	m.Players.Range(func(_ int, player *clients.Player) bool {
+		if player != nil && player.SeatIndex >= 0 {
+			used[player.SeatIndex] = struct{}{}
+		}
+		return true
+	})
+	for seat := 0; seat < constants.RoomCapacity; seat++ {
+		if _, occupied := used[seat]; !occupied {
+			return seat
+		}
+	}
+	return -1
 }
 
 // DelUser 删除指定用户。
