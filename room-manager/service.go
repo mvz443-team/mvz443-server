@@ -66,6 +66,38 @@ func (rm *RoomManager) GetRooms(chapterID, stageID int) []types.RoomsInfo {
 	return rooms
 }
 
+// FindUserRoom 按昵称查找玩家当前所在的房间席位。
+func (rm *RoomManager) FindUserRoom(name string) *roomatom.UserRoomMembership {
+	if name == "" {
+		return nil
+	}
+	var found *roomatom.UserRoomMembership
+	rm.rooms.Range(func(_ int, room *Room) bool {
+		if membership := room.FindMembershipByName(name); membership != nil {
+			found = membership
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+// LeaveUserRoom 让昵称对应玩家永久退出其所在房间。
+func (rm *RoomManager) LeaveUserRoom(name string) bool {
+	if name == "" {
+		return false
+	}
+	left := false
+	rm.rooms.Range(func(_ int, room *Room) bool {
+		if room.RequestLeaveUserByName(name) {
+			left = true
+			return false
+		}
+		return true
+	})
+	return left
+}
+
 // GetNewRoomId 寻找一个未使用的房间 id。
 func (rm *RoomManager) GetNewRoomId() int {
 	id := 0

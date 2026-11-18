@@ -37,7 +37,7 @@ func TestReconnectPreservesAckAndEpoch(t *testing.T) {
 	}
 }
 
-func TestReconnectRejectsWrongKeyOrStage(t *testing.T) {
+func TestReconnectRejectsWrongKeyAndAllowsLobbyStages(t *testing.T) {
 	room := NewRoom(1, nil)
 	room.key = "secret"
 	room.GameStage.Store(constants.STAGE_InGame)
@@ -50,10 +50,12 @@ func TestReconnectRejectsWrongKeyOrStage(t *testing.T) {
 		t.Fatal("错误密钥不得重连")
 	}
 
+	// 主页“开始游戏”会话检查后的重连需要覆盖准备阶段：
+	// 非 InGame 阶段重新入座并下发房间状态，而不是保留帧补发。
 	room.GameStage.Store(constants.STAGE_Preparing)
 	reply2 := make(chan *clients.Player, 1)
 	room.handleReconnect(&ReconnectRequest{PlayerID: 100, Key: "secret", Reply: reply2})
-	if <-reply2 != nil {
-		t.Fatal("非 InGame 阶段不得走重连路径")
+	if <-reply2 == nil {
+		t.Fatal("Preparing 阶段持正确密钥应可重新入座")
 	}
 }

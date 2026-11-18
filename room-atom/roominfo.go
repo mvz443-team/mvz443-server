@@ -9,6 +9,7 @@ import (
 	"mvzserver/clients"
 	"mvzserver/constants"
 	messages "mvzserver/messages/pb"
+	"sort"
 )
 
 // peers JSON 里的地址字段目前仍是占位符，避免把玩家真实 IP 下发给对手。
@@ -122,6 +123,44 @@ func (room *Room) broadcastReadyCount() {
 	}, nil)
 }
 
+// buildPlayerSyncProgress 构造每位玩家的加载进度快照（Loading 阶段使用）。
+func (room *Room) buildPlayerSyncProgress() []*messages.PlayerSyncProgress {
+	players := make([]*messages.PlayerSyncProgress, 0, 2)
+	room.RoomCtx.Players.Range(func(_ int, player *clients.Player) bool {
+		if player == nil || player.Ctx == nil {
+			return true
+		}
+		progress := player.LoadProgress
+		players = append(players, &messages.PlayerSyncProgress{
+			PlayerId: uint32(player.Ctx.Id),
+			Progress: progress,
+			Name:     player.Name,
+			Loaded:   progress >= 100,
+		})
+		return true
+	})
+	sort.Slice(players, func(i, j int) bool { return players[i].PlayerId < players[j].PlayerId })
+	return players
+}
+
+// broadcastRoomSync 每秒把各玩家加载进度下发给房间内所有人。
+func (room *Room) broadcastRoomSync() {
+	room.RoomCtx.BroadcastMessage(&messages.RoomResponse{
+		Payload: &messages.RoomResponse_RoomSync{
+			RoomSync: &messages.ResponseRoomSync{Players: room.buildPlayerSyncProgress()},
+		},
+	}, nil)
+}
+
+// broadcastRoomAllSync 全员加载完成后广播，客户端据此瞬间切到 MainGame。
+func (room *Room) broadcastRoomAllSync() {
+	room.RoomCtx.BroadcastMessage(&messages.RoomResponse{
+		Payload: &messages.RoomResponse_RoomAllSync{
+			RoomAllSync: &messages.ResponseRoomAllSync{},
+		},
+	}, nil)
+}
+
 func (room *Room) broadcastChooseMap() {
 	room.RoomCtx.BroadcastMessage(&messages.RoomResponse{
 		Payload: &messages.RoomResponse_ChooseMap{
@@ -149,6 +188,7 @@ func (room *Room) resetReadyFlags() {
 		if player != nil {
 			player.IsReady = false
 			player.IsLoaded = false
+			player.LoadProgress = 0
 		}
 		return true
 	})

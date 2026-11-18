@@ -33,6 +33,7 @@ type Room struct {
 	register         chan *clients.Player
 	unregister       chan *clients.Player
 	reconnect        chan *ReconnectRequest
+	leaveUsers       chan *LeaveUserRequest
 	incomingMessages chan *PlayerMessage
 	// 游戏逻辑操作管道
 	ingameOperations chan *messages.InGameOperation
@@ -84,6 +85,9 @@ type Room struct {
 	destroyOnce    sync.Once
 	LastActiveTime time.Time  // 上次活动时间
 	StopChan       chan<- int // 通知房间管理器的停止信号通道
+	// done 在 Destroy 时关闭，用于让 Run 的 select 立即退出；
+	// 避免无人房间继续占用 goroutine（见需求：两人都退出后房间必须真正消失）。
+	done chan struct{}
 }
 
 // ReconnectRequest 由 HTTP goroutine 投递给房间主循环，避免并发修改玩家状态。
@@ -114,11 +118,13 @@ func NewRoom(id int, stopChan chan int) *Room {
 		GameStage:      constants.NewAtomStage(constants.STAGE_InLobby),
 		StopChan:       stopChan,
 		destroyOnce:    sync.Once{},
+		done:           make(chan struct{}),
 
 		// 网络
 		register:         make(chan *clients.Player, 8), // 添加缓冲区
 		unregister:       make(chan *clients.Player, 8), // 添加缓冲区
 		reconnect:        make(chan *ReconnectRequest, 8),
+		leaveUsers:       make(chan *LeaveUserRequest, 8),
 		incomingMessages: make(chan *PlayerMessage, 128),
 		ingameOperations: gameOperationChan,
 		scheduledFrames:  make(map[uint32]*FrameSubmission),
@@ -170,6 +176,11 @@ func (room *Room) Destroy() {
 		log.Printf("🔥 Destroying room %d (stage: %d, players: %d, idle time: %v)",
 			room.ID, room.GameStage.Load(), room.GetPlayerCount(), time.Since(room.LastActiveTime))
 
+		// 先通知 Run 主循环退出；Destroy 幂等，Run 的 defer 再调用时不会重复关闭。
+		if room.done != nil {
+			close(room.done)
+		}
+
 		// 发送房间关闭
 		room.RoomCtx.BroadcastMessage(&messages.RoomResponse{
 			Payload: &messages.RoomResponse_RoomClosed{
@@ -197,8 +208,10 @@ func (room *Room) Destroy() {
 
 		room.RoomCtx.CloseAll()
 
-		// 最后通知房间管理器， 移除我的引用
-		room.StopChan <- room.ID
+		// 最后通知房间管理器，移除我的引用（测试用房间可能没有 manager）
+		if room.StopChan != nil {
+			room.StopChan <- room.ID
+		}
 	})
 }
 

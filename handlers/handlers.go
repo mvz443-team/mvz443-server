@@ -49,6 +49,22 @@ func (sh *ServerHandler) HandleListRoom(c *fiber.Ctx) error {
 	return c.JSON(rooms)
 }
 
+// HandleUserRoom 主页“开始游戏”前置检查：按昵称返回玩家当前所在房间。
+func (sh *ServerHandler) HandleUserRoom(c *fiber.Ctx) error {
+	name := utils.NormalizeUserName(c.Query("user"))
+	membership := sh.RoomMnager.FindUserRoom(name)
+	if membership == nil {
+		return c.JSON(nil)
+	}
+	return c.JSON(membership)
+}
+
+// HandleLeaveUserRoom 玩家选择“不重连”时永久退出所在房间。
+func (sh *ServerHandler) HandleLeaveUserRoom(c *fiber.Ctx) error {
+	name := utils.NormalizeUserName(c.Query("user"))
+	return c.JSON(fiber.Map{"ok": sh.RoomMnager.LeaveUserRoom(name)})
+}
+
 func (sh *ServerHandler) HandleWS(c *websocket.Conn) {
 	// 协议包很小，限制单个 WS 消息大小，防止超大包直接进内存
 	c.SetReadLimit(8 * 1024)

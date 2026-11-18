@@ -50,6 +50,9 @@ func (room *Room) Run() {
 		case request := <-room.reconnect:
 			room.handleReconnect(request)
 
+		case request := <-room.leaveUsers:
+			room.handleLeaveUser(request)
+
 		// 2. 玩家业务消息
 		case message := <-room.incomingMessages:
 			room.handlePlayerMessage(message)
@@ -61,6 +64,10 @@ func (room *Room) Run() {
 		// 4. 秒级维护
 		case <-maintenanceTicker.C:
 			room.tickMaintenance()
+
+		// 5. 房间被销毁：真正退出主循环，不再占用 goroutine
+		case <-room.done:
+			return
 		}
 	}
 }
@@ -70,6 +77,7 @@ func (room *Room) tickMaintenance() {
 	room.tickHeartbeat()
 	room.tickPostGame()
 	room.sweepStaleDisconnected()
+	room.tickRoomSync()
 }
 
 // StartServeClient 该连接的读循环：把上行消息投递给房间主循环，

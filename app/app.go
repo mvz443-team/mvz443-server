@@ -72,6 +72,9 @@ func CreateFiberApp(cfg AppConfig, serverHandler *handlers.ServerHandler) (fapp 
 	}
 	fapp.Get("/ws", websocket.New(serverHandler.HandleWS, wsConfig))
 	fapp.Get("/list", serverHandler.HandleListRoom)
+	// 主页进入游戏前查询/退出玩家已有房间会话
+	fapp.Get("/user-room", serverHandler.HandleUserRoom)
+	fapp.Post("/user-room/leave", serverHandler.HandleLeaveUserRoom)
 	// 客户端联机设置里的连通性与延时探测
 	fapp.Get("/ping", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"pong": time.Now().UnixMilli()})

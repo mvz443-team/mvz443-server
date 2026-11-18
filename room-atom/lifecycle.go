@@ -88,6 +88,30 @@ func (room *Room) tickReconnectGrace() {
 	room.scheduleAuthoritativeEnd()
 }
 
+// tickRoomSync 每秒调用：Loading 阶段向全房间下发玩家加载进度，
+// 并兜底检查是否已经全员加载完成（避免某个 playerLoaded 包丢失导致卡住）。
+func (room *Room) tickRoomSync() {
+	if !room.GameStage.EqualTo(constants.STAGE_Loading) {
+		return
+	}
+	room.broadcastRoomSync()
+	room.startInGameFromLoading()
+}
+
+// startInGameFromLoading 是 Loading → InGame 的唯一入口。
+// 全员 LoadProgress >= 100 时广播 roomAllSync 并启动逻辑帧定时器。
+func (room *Room) startInGameFromLoading() bool {
+	if !room.GameStage.EqualTo(constants.STAGE_Loading) || !room.HasAllPlayerLoaded() {
+		return false
+	}
+	room.resetInGameState()
+	room.GameStage.Store(constants.STAGE_InGame)
+	room.broadcastRoomAllSync()
+	room.RoomCtx.StartGameTicker()
+	log.Printf("🟢 房间 %d 全员加载完成，广播 roomAllSync 并启动 ticker", room.ID)
+	return true
+}
+
 // tickHeartbeat 每秒调用：扫描心跳超时的连接。
 // 大厅/选卡阶段没有业务帧，拔线的对端只有靠它发现；
 // InGame 阶段客户端每个逻辑帧都有 blank 上行，天然维持心跳。

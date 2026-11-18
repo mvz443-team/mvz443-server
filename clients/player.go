@@ -36,8 +36,11 @@ func ReleasePlayerMessage(msg *PlayerMessage) {
 type Player struct {
 	Ctx *ClientCtx // 客户端连接上下文
 
-	IsReady  bool // 是否准备好（等待房间 / 选卡确认共用）
-	IsLoaded bool // 是否加载完毕
+	IsReady  bool   // 是否准备好（等待房间 / 选卡确认共用）
+	IsLoaded bool   // 是否加载完毕
+	// LoadProgress Loading 阶段加载进度，1..100；100 表示完全加载好等待同步。
+	// 由房间主循环独占读写，仅通过 playerLoaded 请求推进。
+	LoadProgress uint32
 
 	// 玩家昵称，由客户端连接时携带；仅用于房间内展示
 	Name string
@@ -54,9 +57,10 @@ type Player struct {
 
 func NewPlayer(ctx *ClientCtx) Player {
 	return Player{
-		Ctx:      ctx,
-		IsReady:  false,
-		IsLoaded: false,
+		Ctx:          ctx,
+		IsReady:      false,
+		IsLoaded:     false,
+		LoadProgress: 0,
 	}
 }
 
@@ -64,6 +68,7 @@ func NewPlayer(ctx *ClientCtx) Player {
 func (p *Player) ResetData() {
 	p.IsReady = false
 	p.IsLoaded = false
+	p.LoadProgress = 0
 	p.Loadout = nil
 	p.LastSyncedFrameID.Store(0)
 	if p.Ctx != nil {

@@ -141,6 +141,13 @@ func (room *Room) handleUnregister(player *clients.Player) {
 	}
 	room.transferOwnerIfNeeded(leavingID)
 
+	// 最后一个玩家离开：立即销毁房间并从 manager 移除，
+	// 不再让它以 0 人状态留在房间列表里等待分钟级清理。
+	if room.GetPlayerCount() == 0 {
+		log.Printf("🧹 房间 %d 已无玩家，立即销毁", room.ID)
+		room.Destroy()
+		return
+	}
 	// 选卡阶段有人离开：退回等待房间，避免剩下的人卡在选卡界面
 	if room.GameStage.EqualTo(constants.STAGE_Preparing) {
 		room.returnToLobby()
@@ -158,7 +165,12 @@ func (room *Room) handleReconnect(request *ReconnectRequest) {
 		}
 	}
 
-	if request == nil || !room.GameStage.EqualTo(constants.STAGE_InGame) {
+	if request == nil {
+		reply(nil)
+		return
+	}
+	stage := room.GameStage.Load()
+	if stage >= constants.STAGE_CLOSED {
 		reply(nil)
 		return
 	}
@@ -177,21 +189,33 @@ func (room *Room) handleReconnect(request *ReconnectRequest) {
 		return
 	}
 
-	newCtx := clients.NewClientCtx(request.Conn, request.PlayerID)
-	newCtx.LatestFrameID.Store(target.Ctx.LatestFrameID.Load())
-	newCtx.LatestAckFrameID.Store(target.Ctx.LatestAckFrameID.Load())
-	newCtx.State = constants.PlayerStateConnected
+	// InGame：保留帧进度并从 checkpoint 补帧。
+	// 其他阶段（大厅/选卡/加载）：直接重新入座并同步当前房间状态。
+	if room.GameStage.EqualTo(constants.STAGE_InGame) {
+		newCtx := clients.NewClientCtx(request.Conn, request.PlayerID)
+		newCtx.LatestFrameID.Store(target.Ctx.LatestFrameID.Load())
+		newCtx.LatestAckFrameID.Store(target.Ctx.LatestAckFrameID.Load())
+		newCtx.State = constants.PlayerStateConnected
 
-	oldCtx := target.Ctx
-	target.Ctx = newCtx
-	target.ConnectionEpoch++
-	if oldCtx.IsConnected() {
-		oldCtx.Close()
+		oldCtx := target.Ctx
+		target.Ctx = newCtx
+		target.ConnectionEpoch++
+		if oldCtx.IsConnected() {
+			oldCtx.Close()
+		}
+
+		log.Printf("🟢 玩家 %d 重连成功，从帧 %d 继续", request.PlayerID, newCtx.LatestAckFrameID.Load())
+		room.onPlayerReconnected(target)
+		room.sendReplayFromCheckpoint(target)
+		room.sendRoomAllSyncTo(target)
+	} else {
+		newCtx := clients.NewClientCtx(request.Conn, request.PlayerID)
+		newCtx.State = constants.PlayerStateConnected
+		if !room.rebindPlayerInLobby(target, newCtx) {
+			reply(nil)
+			return
+		}
 	}
-
-	log.Printf("🟢 玩家 %d 重连成功，从帧 %d 继续", request.PlayerID, newCtx.LatestAckFrameID.Load())
-	room.onPlayerReconnected(target)
-	room.sendReplayFromCheckpoint(target)
 	reply(target)
 }
 
@@ -261,6 +285,8 @@ func (room *Room) handlePlayerMessage(msg *PlayerMessage) {
 	// Loading
 	case *messages.Request_Loaded:
 		room.HandleRequestLoaded(msg.Player, payload.Loaded)
+	case *messages.Request_PlayerLoaded:
+		room.HandleRequestPlayerLoaded(msg.Player, payload.PlayerLoaded)
 	// InGame
 	case *messages.Request_Blank:
 		room.HandleRequestBlank(msg.Player, payload.Blank)
@@ -495,41 +521,33 @@ func (room *Room) HandleRequestLoaded(player *Player, req *messages.RequestLoade
 	}
 
 	player.IsLoaded = req.IsLoaded
-	log.Printf("🔵 HandleRequestLoaded: Set player %d isLoaded to %v", player.GetID(), req.IsLoaded)
-
-	// 检查所有玩家状态
-	totalPlayers := room.GetPlayerCount()
-	loadedCount := 0
-	room.RoomCtx.Players.Range(func(key int, value *clients.Player) bool {
-		if value.IsLoaded {
-			loadedCount++
-		}
-		log.Printf("🔵 Player %d: isLoaded=%v", key, value.IsLoaded)
-		return true
-	})
-
-	log.Printf("🔵 HandleRequestLoaded: %d/%d players loaded", loadedCount, totalPlayers)
-
-	if room.HasAllPlayerLoaded() {
-		log.Printf("🟢 All players loaded! Starting game...")
-		// 如果所有玩家都加载完毕，开始游戏
-		room.resetInGameState()
-		room.GameStage.Store(constants.STAGE_InGame)
-		// 发送游戏开始广播帧
-		payload := messages.ResponseAllLoaded{}
-		resp := &messages.RoomResponse{
-			Payload: &messages.RoomResponse_AllLoaded{
-				AllLoaded: &payload,
-			},
-		}
-		room.RoomCtx.BroadcastMessage(resp, nil)
-		log.Printf("🟢 AllLoaded message sent with seed: %d", room.Seed)
-		// 启动游戏逻辑定时器
-		room.RoomCtx.StartGameTicker()
-		log.Printf("🟢 Game ticker started")
-	} else {
-		log.Printf("🟡 Not all players loaded yet, waiting...")
+	if req.IsLoaded {
+		player.LoadProgress = 100
 	}
+	room.startInGameFromLoading()
+}
+
+// HandleRequestPlayerLoaded 处理加载进度上报。
+// progress 是 1..100 的整数，100 表示玩家资源与战局已初始化完毕、进入等待同步。
+// 进度单调递增，避免乱序包把进度回退；达到 100 时置 IsLoaded 并广播 roomSync。
+func (room *Room) HandleRequestPlayerLoaded(player *Player, req *messages.RequestPlayerLoaded) {
+	if player == nil || req == nil || !room.GameStage.EqualTo(constants.STAGE_Loading) {
+		return
+	}
+
+	progress := req.Progress
+	if progress > 100 {
+		progress = 100
+	}
+	if progress > player.LoadProgress {
+		player.LoadProgress = progress
+	}
+	if player.LoadProgress >= 100 {
+		player.IsLoaded = true
+	}
+	room.UpdateActiveTime()
+	room.broadcastRoomSync()
+	room.startInGameFromLoading()
 }
 
 // 判断游戏中的客户端发来帧是否可以采用以及更新frame状态
