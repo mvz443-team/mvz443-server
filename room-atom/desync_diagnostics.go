@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,13 +22,120 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const desyncLogDir = "desync-logs"
+const defaultDesyncLogDir = "desync-logs"
+
+// NetDebugEnabled 由服务器 --netDebug 启动参数开启；开启后每个战局日志都会
+// 记录用户命令抵达时的服务端权威帧号，用于和两名客户端日志做离线复现。
+var NetDebugEnabled bool
+
+var desyncLogDirMu sync.RWMutex
+var desyncLogDirPath = defaultDesyncLogDir
+var desyncLogSession = time.Now().Format("20060102T150405.000")
+var latestDesyncLogPathMu sync.RWMutex
+var latestDesyncLogPath string
+
+const desyncSnapshotFileSuffix = ".desync.json"
+const netDebugLogDirName = "netDebug-logs"
+
+func SetDesyncLogDir(path string) {
+	desyncLogDirMu.Lock()
+	defer desyncLogDirMu.Unlock()
+	trimmed := ""
+	if path != "" {
+		if absolute, err := filepath.Abs(path); err == nil {
+			trimmed = absolute
+		} else {
+			trimmed = path
+		}
+	}
+	if trimmed == "" {
+		if cwd, err := os.Getwd(); err == nil {
+			trimmed = filepath.Join(cwd, netDebugLogDirName)
+		} else {
+			trimmed = netDebugLogDirName
+		}
+	}
+	if absolute, err := filepath.Abs(trimmed); err == nil {
+		trimmed = absolute
+	}
+	desyncLogDirPath = trimmed
+}
+
+func DesyncLogDir() string {
+	desyncLogDirMu.RLock()
+	defer desyncLogDirMu.RUnlock()
+	return desyncLogDirPath
+}
+
+func DesyncLogSession() string {
+	return desyncLogSession
+}
+
+func currentDesyncLogPath(roomID int) string {
+	desyncLogsMu.RLock()
+	writer := desyncLogs[roomID]
+	desyncLogsMu.RUnlock()
+	if writer != nil {
+		return writer.path
+	}
+	latestDesyncLogPathMu.RLock()
+	path := latestDesyncLogPath
+	latestDesyncLogPathMu.RUnlock()
+	if path != "" {
+		return path
+	}
+	return DesyncLogPath(roomID)
+}
+
+func flushDesyncLog(roomID int) {
+	desyncLogsMu.RLock()
+	writer := desyncLogs[roomID]
+	desyncLogsMu.RUnlock()
+	if writer != nil {
+		writer.write("desync_snapshot_saved", nil)
+		writer.flush()
+	}
+}
+
+// writeDesyncSnapshot 在检测到分叉时立即生成独立 JSON 文件。
+// 房间级 jsonl 会继续记录，但分叉证据不能等到房间关闭才落盘。
+func writeDesyncSnapshot(roomID int, fields map[string]any) string {
+	path := currentDesyncLogPath(roomID)
+	snapshotPath := strings.TrimSuffix(path, filepath.Ext(path)) + desyncSnapshotFileSuffix
+	record := map[string]any{
+		"ts":           time.Now().Format(time.RFC3339Nano),
+		"type":         "mvz443-server-desync-snapshot",
+		"roomId":       roomID,
+		"logPath":      path,
+		"snapshotPath": snapshotPath,
+	}
+	for key, value := range fields {
+		record[key] = value
+	}
+	data, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		log.Printf("🔴 分叉快照序列化失败 room=%d: %v", roomID, err)
+		return ""
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(snapshotPath, data, 0o644); err != nil {
+		log.Printf("🔴 分叉快照落盘失败 room=%d path=%s: %v", roomID, snapshotPath, err)
+		return ""
+	}
+	if file, err := os.OpenFile(snapshotPath, os.O_WRONLY, 0); err == nil {
+		_ = file.Sync()
+		_ = file.Close()
+	}
+	log.Printf("💾 分叉快照已保存 room=%d path=%s", roomID, snapshotPath)
+	return snapshotPath
+}
 
 type desyncLogWriter struct {
 	mu     sync.Mutex
 	file   *os.File
 	buffer *bufio.Writer
 	roomID int
+	path   string
 }
 
 var desyncLogsMu sync.RWMutex
@@ -37,12 +145,31 @@ func startDesyncLog(roomID int) *desyncLogWriter {
 	if roomID <= 0 {
 		return nil
 	}
-	if err := os.MkdirAll(desyncLogDir, 0o755); err != nil {
+	dir := DesyncLogDir()
+	if dir == "" {
+		executable, err := os.Executable()
+		if err == nil {
+			dir = filepath.Join(filepath.Dir(executable), defaultDesyncLogDir)
+		} else {
+			dir = defaultDesyncLogDir
+		}
+		SetDesyncLogDir(dir)
+	}
+	if absolute, err := filepath.Abs(dir); err == nil {
+		dir = absolute
+		SetDesyncLogDir(dir)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		log.Printf("🔴 创建分叉日志目录失败: %v", err)
 		return nil
 	}
 	path := DesyncLogPath(roomID)
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o644)
+	if os.IsExist(err) {
+		// 同一进程内房间 id 会复用；每局独立文件名，绝不覆盖上一局。
+		path = fmt.Sprintf("%s.%d.jsonl", filepath.Join(dir, fmt.Sprintf("room-%d", roomID)), time.Now().UnixNano())
+		file, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o644)
+	}
 	if err != nil {
 		log.Printf("🔴 打开分叉日志失败 %s: %v", path, err)
 		return nil
@@ -51,6 +178,7 @@ func startDesyncLog(roomID int) *desyncLogWriter {
 		file:   file,
 		buffer: bufio.NewWriterSize(file, 256*1024),
 		roomID: roomID,
+		path:   path,
 	}
 	desyncLogsMu.Lock()
 	if previous := desyncLogs[roomID]; previous != nil {
@@ -59,11 +187,20 @@ func startDesyncLog(roomID int) *desyncLogWriter {
 	}
 	desyncLogs[roomID] = writer
 	desyncLogsMu.Unlock()
-	log.Printf("🟢 分叉诊断日志已开启: %s", path)
-	writer.write("log_start", map[string]any{
-		"roomId": roomID,
-		"path":   path,
-	})
+	latestDesyncLogPathMu.Lock()
+	latestDesyncLogPath = path
+	latestDesyncLogPathMu.Unlock()
+	log.Printf("🟢 分叉诊断日志已开启 room=%d netDebug=%v path=%s", roomID, NetDebugEnabled, path)
+	record := map[string]any{
+		"roomId":   roomID,
+		"path":     path,
+		"netDebug": NetDebugEnabled,
+	}
+	if NetDebugEnabled {
+		record["note"] = "all requests and rewritten execution frames are logged"
+	}
+	writer.write("log_start", record)
+	writer.flush()
 	return writer
 }
 
@@ -77,12 +214,29 @@ func stopDesyncLog(roomID int) {
 	}
 	writer.write("log_stop", map[string]any{"roomId": roomID})
 	writer.flush()
+	log.Printf("🟢 分叉诊断日志已关闭 room=%d path=%s", roomID, writer.path)
 	writer.mu.Lock()
 	if writer.file != nil {
 		_ = writer.file.Close()
 		writer.file = nil
 	}
 	writer.mu.Unlock()
+}
+
+// finishDesyncLog 在战局结束时落一条终态事件并立即刷盘，但不关闭日志：
+// PostGame 宽限期内仍可能有补发命令，日志需要继续记录到房间真正结束。
+func finishDesyncLog(roomID int, event string, fields map[string]any) {
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	fields["roomId"] = roomID
+	recordDesyncEvent(roomID, event, fields)
+	desyncLogsMu.RLock()
+	writer := desyncLogs[roomID]
+	desyncLogsMu.RUnlock()
+	if writer != nil {
+		writer.flush()
+	}
 }
 
 func recordDesyncEvent(roomID int, event string, fields map[string]any) {
@@ -119,7 +273,36 @@ func shouldLogRequest(request *messages.Request) bool {
 	if blank.Blank == nil {
 		return true
 	}
+	if NetDebugEnabled {
+		return true
+	}
 	return shouldLogFrameDetail(blank.Blank.FrameId) || blank.Blank.HashFrameId != 0
+}
+
+// recordOperationExecutionFrame 在服务端改写 process_frame_id 后记录目标执行帧。
+// 高延迟玩家上传的期望帧会被夹到当前窗口；离线复现必须按改写后的帧号注入
+// 命令，否则无法还原实际联机顺序。
+func recordOperationExecutionFrame(room *Room, player *Player, kind string, base *messages.RequestGridOperation, effectiveFrameID, requestedFrameID uint32) {
+	if room == nil || base == nil {
+		return
+	}
+	base.ProcessFrameId = effectiveFrameID
+	recordDesyncEvent(room.ID, "operation_execution_frame", map[string]any{
+		"playerId":                 playerIDOrZero(player),
+		"kind":                     kind,
+		"clientOpSeq":              base.ClientOpSeq,
+		"requestedProcessFrameId":  requestedFrameID,
+		"effectiveProcessFrameId":  effectiveFrameID,
+		"receivedServerFrameId":    room.currentServerFrameID(),
+		"receivedCommittedFrameId": room.committedFrameID(),
+	})
+}
+
+func playerIDOrZero(player *Player) int {
+	if player == nil {
+		return 0
+	}
+	return player.GetID()
 }
 
 func (writer *desyncLogWriter) write(event string, fields map[string]any) {
@@ -159,11 +342,14 @@ func (writer *desyncLogWriter) flush() {
 	if writer.buffer != nil {
 		_ = writer.buffer.Flush()
 	}
+	if writer.file != nil {
+		_ = writer.file.Sync()
+	}
 }
 
 // DesyncLogPath 返回房间诊断日志路径。
 func DesyncLogPath(roomID int) string {
-	return filepath.Join(desyncLogDir, fmt.Sprintf("room-%d.jsonl", roomID))
+	return filepath.Join(DesyncLogDir(), fmt.Sprintf("room-%d-%s.jsonl", roomID, desyncLogSession))
 }
 
 // ReadDesyncLog 供临时 HTTP 下载接口读取日志。
@@ -179,7 +365,19 @@ func ReadDesyncLog(roomID int) ([]byte, error) {
 		if writer.buffer != nil {
 			_ = writer.buffer.Flush()
 		}
+		if writer.file != nil {
+			_ = writer.file.Sync()
+		}
 		writer.mu.Unlock()
+	}
+	if writer != nil {
+		return os.ReadFile(writer.path)
+	}
+	latestDesyncLogPathMu.RLock()
+	path := latestDesyncLogPath
+	latestDesyncLogPathMu.RUnlock()
+	if path != "" {
+		return os.ReadFile(path)
 	}
 	return os.ReadFile(DesyncLogPath(roomID))
 }

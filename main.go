@@ -6,6 +6,7 @@ import (
 	"log"
 	"mvzserver/app"
 	"mvzserver/constants"
+	roomatom "mvzserver/room-atom"
 	"mvzserver/utils"
 	"os"
 	"path/filepath"
@@ -21,7 +22,19 @@ func main() {
 	pemCertsDirShort := flag.String("c", "", "使用包含 cert.pem 和 privkey.pem 的证书目录")
 	localCertsDir := flag.String("local-certs", "", "使用包含 ssl.cert 和 ssl.key 的证书目录，缺失时自动生成")
 	localCertsDirShort := flag.String("l", "", "使用包含 ssl.cert 和 ssl.key 的证书目录，缺失时自动生成")
+	netDebug := flag.Bool("netDebug", false, "记录每个战局接收到用户命令时的服务端帧号")
+	netDebugDir := flag.String("netDebugDir", "", "netDebug 日志目录（默认可执行文件目录下 desync-logs）")
 	flag.Parse()
+
+	roomatom.NetDebugEnabled = *netDebug
+	if *netDebug {
+		if *netDebugDir != "" {
+			roomatom.SetDesyncLogDir(*netDebugDir)
+		} else if executable, err := os.Executable(); err == nil {
+			roomatom.SetDesyncLogDir(filepath.Join(filepath.Dir(executable), "desync-logs"))
+		}
+		log.Printf("🟢 netDebug 已开启，日志目录: %s", roomatom.DesyncLogDir())
+	}
 
 	// 如果请求生成新的本地证书
 	if *newLocalCerts != "" {

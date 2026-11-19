@@ -123,6 +123,9 @@ func (room *Room) committedFrameID() uint32 {
 }
 
 func (room *Room) resetInGameState() {
+	finishDesyncLog(room.ID, "log_complete", map[string]any{
+		"reason": "new_game",
+	})
 	startDesyncLog(room.ID)
 	recordDesyncEvent(room.ID, "game_start", map[string]any{
 		"seed":      room.Seed,
@@ -604,7 +607,7 @@ func (room *Room) checkHashSchemaVersions() {
 
 // recordStateHash 汇总同一帧各客户端的状态摘要，不一致即判定分叉并广播止损。
 func (room *Room) recordStateHash(player *Player, frameID uint32, hash uint32) {
-	if player == nil || player.Ctx == nil || frameID == 0 || hash == 0 {
+	if room == nil || player == nil || player.Ctx == nil || frameID == 0 || hash == 0 {
 		return
 	}
 	if frameID > room.currentServerFrameID() {
@@ -656,7 +659,7 @@ func (room *Room) recordStateHash(player *Player, frameID uint32, hash uint32) {
 
 // evaluateCommittedStateHashes 在 committed 推进后，比较所有已经双端确认的摘要。
 func (room *Room) evaluateCommittedStateHashes(committed uint32) {
-	if len(room.FrameHashes) == 0 {
+	if room == nil || len(room.FrameHashes) == 0 {
 		return
 	}
 	for frameID := range room.FrameHashes {
@@ -673,6 +676,9 @@ func (room *Room) evaluateCommittedStateHashes(committed uint32) {
 }
 
 func (room *Room) evaluateStateHash(frameID uint32) {
+	if room == nil || room.DesyncDetected {
+		return
+	}
 	hashes := room.FrameHashes[frameID]
 	if len(hashes) < 2 {
 		return
@@ -701,15 +707,31 @@ func (room *Room) evaluateStateHash(frameID uint32) {
 	room.DesyncDetected = true
 	hashText := formatFrameHashes(hashes)
 	log.Printf("🚨 检测到状态分叉 frame=%d hashes=%s committed=%d", frameID, hashText, room.committedFrameID())
-	recordDesyncEvent(room.ID, "desync_detected", map[string]any{
+	hashesCopy := make(map[int]uint32, len(hashes))
+	for playerID, hash := range hashes {
+		hashesCopy[playerID] = hash
+	}
+	frameHashesCopy := make(map[uint32]map[int]uint32, len(room.FrameHashes))
+	for id, frameHashes := range room.FrameHashes {
+		hashes := make(map[int]uint32, len(frameHashes))
+		for playerID, hash := range frameHashes {
+			hashes[playerID] = hash
+		}
+		frameHashesCopy[id] = hashes
+	}
+	snapshotFields := map[string]any{
 		"frameId":          frameID,
-		"hashes":           hashes,
+		"hashes":           hashesCopy,
 		"hashText":         hashText,
 		"committedFrameId": room.committedFrameID(),
 		"players":          room.playerSyncSnapshot(),
-		"frameHashes":      room.FrameHashes,
+		"frameHashes":      frameHashesCopy,
 		"recentFrames":     room.describeRecentFrames(frameID, 30),
-	})
+	}
+	snapshotPath := writeDesyncSnapshot(room.ID, snapshotFields)
+	snapshotFields["snapshotPath"] = snapshotPath
+	recordDesyncEvent(room.ID, "desync_detected", snapshotFields)
+	flushDesyncLog(room.ID)
 	resp := &messages.RoomResponse{
 		Payload: &messages.RoomResponse_Error{
 			Error: &messages.ResponseErrorMessage{
@@ -837,6 +859,10 @@ func (room *Room) enterPostGameAfterEndFrame() {
 		return
 	}
 	room.GameStage.Store(constants.STAGE_PostGame)
+	finishDesyncLog(room.ID, "game_end", map[string]any{
+		"endFrameId": room.EndGameFrameID,
+		"result":     room.EndGameResult,
+	})
 	if room.RoomCtx.GameTicker != nil {
 		room.RoomCtx.GameTicker.Stop()
 		room.RoomCtx.GameTicker = nil

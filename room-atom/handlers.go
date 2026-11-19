@@ -323,6 +323,8 @@ func (room *Room) handlePlayerMessage(msg *PlayerMessage) {
 			"playerId": msg.Player.GetID(),
 			"payload":  describeRequest(&request),
 			"stage":    room.GameStage.Load(),
+			"receivedServerFrameId": room.currentServerFrameID(),
+			"receivedCommittedFrameId": room.committedFrameID(),
 			"players":  room.playerSyncSnapshot(),
 			// 原始字节主要用于离线复现异常帧；只有被采样的 blank 或非心跳请求会走到这里。
 			"rawBase64": base64.StdEncoding.EncodeToString(msg.Data),
@@ -678,18 +680,16 @@ func (room *Room) HandleRequestCardPlant(player *Player, req *messages.RequestCa
 
 	// 此帧想要发生的时机晚于下一帧序号，但不允许调度过远的未来帧
 	processFrameID, validFrame := room.resolveProcessFrameID(req.Base)
+	requestedProcessFrameID := req.Base.ProcessFrameId
 	if !validFrame {
 		room.rejectOperation(player, req.Base, processFrameID, "process_frame_id 超出允许窗口")
 		return
 	}
 	req.Base.ProcessFrameId = processFrameID
+	recordOperationExecutionFrame(room, player, "plant", req.Base, processFrameID, requestedProcessFrameID)
 
 	if req.Cost < 0 || req.Cost > maxOperationCost || req.EnergySum < 0 || req.StarShardsSum < 0 {
 		room.rejectOperation(player, req.Base, processFrameID, "非法的消耗或资源数值")
-		return
-	}
-	if !room.CouldAffordable(player, req.Cost, 0, req.EnergySum, req.StarShardsSum) {
-		room.rejectOperation(player, req.Base, processFrameID, "资源不足或自报资源非法")
 		return
 	}
 	operation := room.Logic.PlantCard(player, req)
@@ -718,11 +718,13 @@ func (room *Room) HandleRequestRemovePlant(player *Player, req *messages.Request
 	}
 	// 此帧想要发生的时机晚于下一帧序号，但不允许调度过远的未来帧
 	processFrameID, validFrame := room.resolveProcessFrameID(req.Base)
+	requestedProcessFrameID := req.Base.ProcessFrameId
 	if !validFrame {
 		room.rejectOperation(player, req.Base, processFrameID, "process_frame_id 超出允许窗口")
 		return
 	}
 	req.Base.ProcessFrameId = processFrameID
+	recordOperationExecutionFrame(room, player, "removePlant", req.Base, processFrameID, requestedProcessFrameID)
 
 	operation := room.Logic.RemoveCard(player, req)
 	room.recordOperationSubmission(req.Base.ProcessFrameId, operation)
@@ -751,18 +753,16 @@ func (room *Room) HandleRequestStarShards(player *Player, req *messages.RequestS
 
 	// 此帧想要发生的时机晚于下一帧序号，但不允许调度过远的未来帧
 	processFrameID, validFrame := room.resolveProcessFrameID(req.Base)
+	requestedProcessFrameID := req.Base.ProcessFrameId
 	if !validFrame {
 		room.rejectOperation(player, req.Base, processFrameID, "process_frame_id 超出允许窗口")
 		return
 	}
 	req.Base.ProcessFrameId = processFrameID
+	recordOperationExecutionFrame(room, player, "starShards", req.Base, processFrameID, requestedProcessFrameID)
 
 	if req.Cost < 0 || req.Cost > maxOperationCost || req.EnergySum < 0 || req.StarShardsSum < 0 {
 		room.rejectOperation(player, req.Base, processFrameID, "非法的消耗或资源数值")
-		return
-	}
-	if !room.CouldAffordable(player, 0, req.Cost, req.EnergySum, req.StarShardsSum) {
-		room.rejectOperation(player, req.Base, processFrameID, "资源不足或自报资源非法")
 		return
 	}
 	operation := room.Logic.UseStarShards(player, req)

@@ -1,0 +1,3 @@
+{"event":"log_start","netDebug":false,"path":"D:\\code\\js\\mvz443\\server-repo-temp\\room-atom\\netDebug-logs\\room-1-20261119T235204.819.jsonl","roomId":1,"ts":"2026-11-19T23:52:04.8898189+08:00"}
+{"chapterId":0,"event":"game_start","loadouts":[],"players":[],"roomId":1,"seed":24380264,"stageId":0,"ts":"2026-11-19T23:52:04.893985+08:00"}
+{"event":"log_complete","reason":"new_game","roomId":1,"ts":"2026-11-19T23:52:04.893985+08:00"}

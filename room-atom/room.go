@@ -154,6 +154,9 @@ func NewRoom(id int, stopChan chan int) *Room {
 // Reset 房间从 PostGame 返回等待房间，允许下一场游戏。
 // 房间名、密码、绑定关卡属于房间属性，跨局保留。
 func (room *Room) Reset() {
+	finishDesyncLog(room.ID, "log_complete", map[string]any{
+		"reason": "return_to_lobby",
+	})
 	room.RoomCtx.Reset()
 	room.Logic.Reset()
 	// room 本身reset

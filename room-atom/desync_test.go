@@ -1,6 +1,11 @@
 package roomatom
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+
 	"mvzserver/clients"
 	messages "mvzserver/messages/pb"
 	"testing"
@@ -35,6 +40,91 @@ func TestStateHashMismatchIsDetected(t *testing.T) {
 	room.recordStateHash(p1, 21, 3333)
 	if !room.DesyncDetected {
 		t.Fatal("同一帧摘要不一致必须判定分叉")
+	}
+}
+
+func TestStateHashMismatchWritesSnapshotImmediately(t *testing.T) {
+	dir := t.TempDir()
+	SetDesyncLogDir(dir)
+	t.Cleanup(func() { SetDesyncLogDir("") })
+
+	room := newTestRoom(22)
+	room.ID = 22
+	writer := startDesyncLog(room.ID)
+	if writer == nil {
+		t.Fatal("测试环境必须能打开房间诊断日志")
+	}
+	t.Cleanup(func() {
+		flushDesyncLog(room.ID)
+		stopDesyncLog(room.ID)
+	})
+	room.FrameHashes = make(map[uint32]map[int]uint32)
+	p1 := testHashPlayer(100)
+	p2 := testHashPlayer(101)
+	p1.Ctx.LatestAckFrameID.Store(22)
+	p2.Ctx.LatestAckFrameID.Store(22)
+	room.RoomCtx.Players.Store(100, p1)
+	room.RoomCtx.Players.Store(101, p2)
+
+	room.recordStateHash(p1, 22, 1111)
+	room.recordStateHash(p2, 22, 2222)
+	if !room.DesyncDetected {
+		t.Fatal("同一帧摘要不一致必须判定分叉")
+	}
+
+	matches, err := filepath.Glob(filepath.Join(dir, "*.desync.json"))
+	if err != nil {
+		t.Fatalf("查找分叉快照失败: %v", err)
+	}
+	if len(matches) == 0 {
+		t.Fatal("分叉时必须立即落盘独立快照文件")
+	}
+	data, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatalf("读取分叉快照失败: %v", err)
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatalf("分叉快照必须是合法 JSON: %v", err)
+	}
+	if snapshot["frameId"] != float64(22) {
+		t.Fatalf("快照帧号不正确: %v", snapshot["frameId"])
+	}
+	logData, err := os.ReadFile(currentDesyncLogPath(room.ID))
+	if err != nil {
+		t.Fatalf("读取房间日志失败: %v", err)
+	}
+	if !strings.Contains(string(logData), "\"event\":\"desync_snapshot_saved\"") {
+		t.Fatal("分叉快照事件必须写入房间日志")
+	}
+}
+
+func TestNetDebugLogsEveryRequest(t *testing.T) {
+	dir := t.TempDir()
+	SetDesyncLogDir(dir)
+	previous := NetDebugEnabled
+	NetDebugEnabled = false
+	t.Cleanup(func() {
+		SetDesyncLogDir("")
+		NetDebugEnabled = previous
+	})
+
+	room := newTestRoom(23)
+	room.ID = 23
+	writer := startDesyncLog(room.ID)
+	if writer == nil {
+		t.Fatal("测试环境必须能打开房间诊断日志")
+	}
+	t.Cleanup(func() {
+		flushDesyncLog(room.ID)
+		stopDesyncLog(room.ID)
+	})
+
+	NetDebugEnabled = true
+	if !shouldLogRequest(&messages.Request{
+		Payload: &messages.Request_Blank{Blank: &messages.RequestBlank{FrameId: 5000}},
+	}) {
+		t.Fatal("开启 netDebug 时必须记录每个用户请求的服务端帧号")
 	}
 }
 

@@ -220,6 +220,14 @@ func (room *Room) returnToLobby() {
 // resetWaitingRoom 把房间拉回等待房间：阶段归位、清空所有人准备状态并广播。
 // emitQuitChooseMap 仅在从选卡阶段退回时为真；等待房间内有人离开不需要该事件。
 func (room *Room) resetWaitingRoom(emitQuitChooseMap bool) {
+	if room.GameStage.EqualTo(constants.STAGE_InGame) ||
+		room.GameStage.EqualTo(constants.STAGE_PostGame) ||
+		room.EndGameGraceActive {
+		finishDesyncLog(room.ID, "log_complete", map[string]any{
+			"reason": "abandoned",
+		})
+		room.EndGameGraceActive = false
+	}
 	room.GameStage.Store(constants.STAGE_InLobby)
 	room.resetReadyFlags()
 	if emitQuitChooseMap {
