@@ -346,7 +346,12 @@ func (room *Room) handlePlayerMessage(msg *PlayerMessage) {
 		room.HandleRequestPlayerLoaded(msg.Player, payload.PlayerLoaded)
 	// InGame
 	case *messages.Request_Blank:
-		room.HandleRequestBlank(msg.Player, payload.Blank)
+		// 心跳在所有阶段都只用于续活。InGame 之外没有权威帧，交给
+		// HandleRequestBlank 会走 syncAllClients 并可能误伤非对局阶段；
+		// 读循环已经在 SafeReadMessage 里刷新心跳时间，这里只需忽略即可。
+		if room.GameStage.EqualTo(constants.STAGE_InGame) || room.EndGameGraceActive {
+			room.HandleRequestBlank(msg.Player, payload.Blank)
+		}
 	case *messages.Request_Plant:
 		room.HandleRequestCardPlant(msg.Player, payload.Plant)
 	case *messages.Request_RemovePlant:
