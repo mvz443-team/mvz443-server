@@ -99,6 +99,31 @@ func TestStateHashMismatchWritesSnapshotImmediately(t *testing.T) {
 	}
 }
 
+func TestWriteDesyncSnapshotCreatesMissingDirectory(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "missing", "netDebug-logs")
+	SetDesyncLogDir(dir)
+	t.Cleanup(func() { SetDesyncLogDir("") })
+
+	latestDesyncLogPathMu.Lock()
+	previous := latestDesyncLogPath
+	latestDesyncLogPath = filepath.Join(dir, "room-0-session.jsonl")
+	latestDesyncLogPathMu.Unlock()
+	t.Cleanup(func() {
+		latestDesyncLogPathMu.Lock()
+		latestDesyncLogPath = previous
+		latestDesyncLogPathMu.Unlock()
+	})
+
+	path := writeDesyncSnapshot(0, map[string]any{"frameId": 1})
+	if path == "" {
+		t.Fatal("分叉快照目录不存在时必须自动创建并落盘")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("分叉快照文件未生成: %v", err)
+	}
+}
+
 func TestNetDebugLogsEveryRequest(t *testing.T) {
 	dir := t.TempDir()
 	SetDesyncLogDir(dir)

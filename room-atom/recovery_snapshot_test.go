@@ -65,6 +65,51 @@ func TestSendSnapshotReplayRequiresContinuousHistory(t *testing.T) {
 	}
 }
 
+// 快照请求失败时必须回退到 checkpoint 回放：重连时只下发一路权威恢复流，
+// 否则新客户端既拿不到快照，也等不到 checkpoint 补帧，会永久停在空世界。
+func TestInvalidSnapshotResponseFallsBackToCheckpointReplay(t *testing.T) {
+	room := NewRoom(32, nil)
+	room.GameStage.Store(constants.STAGE_InGame)
+	room.RoomCtx.NextFrameID.Store(10)
+	for frameID := uint32(7); frameID <= 9; frameID++ {
+		room.frameHistory[frameID] = &messages.InGameResponse{FrameId: frameID}
+	}
+	room.LastCheckpointFrame = 6
+	room.Checkpoints[6] = &stateCheckpoint{frameID: 6, inline: `{"version":1}`, accepted: true}
+	provider := addRecoveryTestPlayer(room, 1, 20)
+	target := addRecoveryTestPlayer(room, 2, 90)
+	targetWrites := make(chan []byte, 1)
+	capture := clients.NewCapturingConnWriter(targetWrites)
+	target.Ctx.SetWriterForTest(capture)
+	defer capture.Close()
+	room.pendingRecoveries[6] = &pendingRecovery{
+		targetPlayerID: target.Ctx.Id,
+		providerID:     provider.Ctx.Id,
+		requestID:      6,
+		deadline:       time.Now().Add(time.Second),
+	}
+
+	room.HandleRequestSnapshotResponse(provider, &messages.RequestSnapshotResponse{
+		RequestId:          6,
+		FrameId:            7,
+		InlineSnapshotJson: "",
+	})
+
+	select {
+	case data := <-targetWrites:
+		response := &messages.RoomResponse{}
+		if err := proto.Unmarshal(data, response); err != nil {
+			t.Fatalf("兜底回放消息解码失败: %v", err)
+		}
+		replay := response.GetReplayFrames()
+		if replay == nil || replay.CheckpointFrameId != 6 {
+			t.Fatalf("快照无效时应回退到 checkpoint 回放，实际 %+v", replay)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("快照无效时未发送 checkpoint 兜底回放")
+	}
+}
+
 func TestPendingRecoveryTimesOut(t *testing.T) {
 	room := NewRoom(1, nil)
 	room.pendingRecoveries[9] = &pendingRecovery{

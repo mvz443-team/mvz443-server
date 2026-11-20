@@ -244,10 +244,12 @@ func (room *Room) handleReconnect(request *ReconnectRequest) {
 		room.sendAllReadyTo(target)
 	// 先把阶段切成 InGame，让新连接的消息进入房间通道。
 	room.sendRoomAllSyncTo(target)
-	room.sendReplayFromCheckpoint(target)
-		// 备用恢复：向最低延迟在线玩家索取最新快照，收到后追加转发。
-		// 即使 checkpoint 不存在或已过期，客户端也能从在线玩家的当前状态快速恢复。
-		room.requestReconnectSnapshot(target)
+	// 恢复只能有一路权威流：优先向在线玩家索取最新快照（帧号更新），
+	// 失败/超时才回退到 checkpoint 回放。两路同时下发会让客户端先恢复
+	// 较新快照，又把较旧回放里的历史帧当成迟到操作重放，立刻 desync。
+	if !room.requestReconnectSnapshot(target) {
+		room.sendReplayFromCheckpoint(target)
+	}
 	} else {
 		newCtx := clients.NewClientCtx(request.Conn, request.PlayerID)
 		newCtx.State = constants.PlayerStateConnected

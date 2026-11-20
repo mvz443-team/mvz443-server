@@ -118,6 +118,12 @@ func writeDesyncSnapshot(roomID int, fields map[string]any) string {
 		return ""
 	}
 	data = append(data, '\n')
+	// room 0（以及 setQueue 尚未绑定的房间）不会执行 startDesyncLog，日志目录
+	// 可能根本不存在；落盘前必须自行创建，否则分叉证据会丢失。
+	if err := os.MkdirAll(filepath.Dir(snapshotPath), 0o755); err != nil {
+		log.Printf("🔴 创建分叉快照目录失败 room=%d path=%s: %v", roomID, snapshotPath, err)
+		return ""
+	}
 	if err := os.WriteFile(snapshotPath, data, 0o644); err != nil {
 		log.Printf("🔴 分叉快照落盘失败 room=%d path=%s: %v", roomID, snapshotPath, err)
 		return ""
