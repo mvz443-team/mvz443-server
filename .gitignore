@@ -40,3 +40,5 @@ mvzserver
 
 # log in development
 desync-logs/
+room-atom/netDebug-logs/
+netDebug-logs/
