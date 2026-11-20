@@ -102,15 +102,19 @@ func (room *Room) handleLeaveUser(request *LeaveUserRequest) {
 	if request == nil {
 		return
 	}
+	// 先按昵称定位席位并保存引用：DelUser 之后 Players 不再含有该 id，
+	// 若删除后再 Load 会拿不到 target，导致退出方的连接永远无法关闭。
 	ok := false
 	var leavingID int
+	var target *clients.Player
 	room.RoomCtx.Players.Range(func(id int, player *clients.Player) bool {
-		if player == nil || player.Ctx == nil {
+		if player == nil {
 			return true
 		}
 		identity := request.Identity
 		if player.Name == identity.UserName && identity.UserName != "" {
 			leavingID = id
+			target = player
 			ok = true
 			return false
 		}
@@ -121,19 +125,24 @@ func (room *Room) handleLeaveUser(request *LeaveUserRequest) {
 		return
 	}
 
-	if target, ok := room.RoomCtx.Players.Load(leavingID); ok {
-		// 主动退出时对退出方单播 roomClosed，不能先把它标成断线再广播：
-		// 那会让对方以为触发了“玩家掉线重连”，在房间取消后仍尝试重连。
-		leaveMessage := &messages.RoomResponse{
-			Payload: &messages.RoomResponse_RoomClosed{
-				RoomClosed: &messages.ResponseRoomClosed{Message: "你已退出游戏"},
-			},
-		}
-		room.RoomCtx.SendMessageToUserByPlayer(leaveMessage, target)
+	// 主动退出时对退出方单播 roomClosed，不能先把它标成断线再广播：
+	// 那会让对方以为触发了“玩家掉线重连”，在房间取消后仍尝试重连。
+	// 必须在 DelUser 之前发送，否则退出方已经不在 Players 中，收不到单播。
+	leaveMessage := &messages.RoomResponse{
+		Payload: &messages.RoomResponse_RoomClosed{
+			RoomClosed: &messages.ResponseRoomClosed{Message: "你已退出游戏"},
+		},
 	}
+	room.RoomCtx.SendMessageToUserByPlayer(leaveMessage, target)
 	room.RoomCtx.DelUser(leavingID)
 	room.transferOwnerIfNeeded(leavingID)
 	log.Printf("🚪 玩家 %d (%s) 从房间 %d 永久退出", leavingID, request.Identity.UserName, room.ID)
+
+	// 关闭退出方的底层连接：DelUser 只从集合移除，不会断开 socket。
+	// 若不关闭，读循环仍阻塞，服务端会一直认为该连接活着。
+	if target.Ctx != nil {
+		target.Ctx.ForceClose()
+	}
 
 	// 对局中主动退出：取消整个房间，对方收到 roomClosed 且不能再重连。
 	// 普通“放弃重连”不改变此行为：只在房间空了时销毁。
@@ -141,9 +150,6 @@ func (room *Room) handleLeaveUser(request *LeaveUserRequest) {
 		room.Destroy()
 		replyLeave(request, true)
 		return
-	}
-	if target, ok := room.RoomCtx.Players.Load(leavingID); ok && target.Ctx != nil {
-		target.Ctx.Close()
 	}
 
 	if room.GetPlayerCount() == 0 {

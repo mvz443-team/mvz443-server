@@ -190,6 +190,46 @@ func TestPeersJSONIncludesDisconnectedState(t *testing.T) {
 	}
 }
 
+// sweepStaleDisconnected 必须在非 InGame 阶段真正移除残留的断线席位，
+// 否则 /user-room 仍能查到已离房玩家，房间也无法销毁（本 bug 的兜底缺口）。
+func TestSweepStaleDisconnectedRemovesStaleSeatsOutsideInGame(t *testing.T) {
+	stopChan := make(chan int, 1)
+	room := NewRoom(55, stopChan)
+	room.GameStage.Store(constants.STAGE_InLobby)
+	live := connectedPlayer(100)
+	stale := disconnectedPlayer(101)
+	// 真实断线路径里 markPlayerDisconnected 会 Close 连接；测试里模拟这一点，
+	// 让 IsConnected() 返回 false，才符合“残留的断线席位”语义。
+	stale.Ctx.Close()
+	room.RoomCtx.Players.Store(100, live)
+	room.RoomCtx.Players.Store(101, stale)
+
+	room.sweepStaleDisconnected()
+
+	if _, ok := room.RoomCtx.Players.Load(101); ok {
+		t.Fatal("非 InGame 阶段的断线残留席位必须被清理")
+	}
+	if _, ok := room.RoomCtx.Players.Load(100); !ok {
+		t.Fatal("在线玩家不应被清理")
+	}
+	if room.FindMembershipByName(stale.Name) != nil {
+		t.Fatal("清理后断线玩家不应再出现在席位查询中")
+	}
+}
+
+// InGame 阶段的断线席位属于重连宽限期，不能被 sweep 误删。
+func TestSweepStaleDisconnectedKeepsSeatsDuringInGame(t *testing.T) {
+	room := lifecycleTestRoom(100)
+	stale := disconnectedPlayer(101)
+	room.RoomCtx.Players.Store(101, stale)
+
+	room.sweepStaleDisconnected()
+
+	if _, ok := room.RoomCtx.Players.Load(101); !ok {
+		t.Fatal("InGame 阶段必须保留断线席位供重连")
+	}
+}
+
 func contains(haystack, needle string) bool {
 	for i := 0; i+len(needle) <= len(haystack); i++ {
 		if haystack[i:i+len(needle)] == needle {

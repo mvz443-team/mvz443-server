@@ -206,21 +206,41 @@ func (room *Room) startPostGameClock() {
 	room.PostGameSince = time.Now()
 }
 
-// sweepStaleDisconnected 非 InGame 阶段的断线席位兜底清理：
-// handleUnregister 已直接移除，这里只处理状态残留，保证集合一致。
+// sweepStaleDisconnected 非 InGame 阶段的断线席位兜底清理。
+// handleUnregister 正常路径会直接移除，但写失败关闭、通道积压等异常下读循环
+// 可能来不及投递 unregister，导致玩家以 Disconnected 状态永久残留在 Players 中：
+// 这样 /user-room 仍能查到已离房玩家，房间也无法被正常销毁。这里在主循环内
+// 定期扫描并真正移除这些席位。InGame 阶段由重连宽限期负责，不能在此清理。
 func (room *Room) sweepStaleDisconnected() {
 	if room.GameStage.EqualTo(constants.STAGE_InGame) {
 		return
 	}
+	// 先收集再删除：避免在 Players.Range 过程中修改集合。
+	staleIDs := make([]int, 0)
 	room.RoomCtx.Players.Range(func(id int, player *Player) bool {
 		if player == nil || player.Ctx == nil {
 			return true
 		}
 		if player.Ctx.State == constants.PlayerStateDisconnected && !player.Ctx.IsConnected() {
-			// 非 InGame 阶段不应保留断线席位；若读到循环未及时注销（如服务器写失败关闭），
-			// 这里直接移除，防止状态残留导致 hasDisconnectedPlayer 误判。
-			_ = id
+			staleIDs = append(staleIDs, id)
 		}
 		return true
 	})
+	if len(staleIDs) == 0 {
+		return
+	}
+	for _, id := range staleIDs {
+		log.Printf("🧹 房间 %d 清理非 InGame 断线残留席位 %d", room.ID, id)
+		room.RoomCtx.DelUser(id)
+		room.transferOwnerIfNeeded(id)
+	}
+	// 这些席位已不在线，清除宽限期标记避免 hasDisconnectedPlayer 误判。
+	room.clearDisconnectGrace()
+
+	if room.GetPlayerCount() == 0 {
+		room.Destroy()
+		return
+	}
+	room.broadcastRoomInfo()
+	room.broadcastReadyCount()
 }
